@@ -2,7 +2,8 @@
 //! version, GUIDs) is [`Song::stamp_save`]'s job.
 //!
 //! Derived on write: the playlist rows (channel and track order), the base and custom names, the output buses (from the
-//! `SEND`s), the pad indexes (slot positions), and every counter raised to cover its ids. Bytes kept by the reader
+//! `SEND`s), and every counter raised to cover its ids. A slot's pad index is its kept `MAIN`@4, and a drum hit's
+//! key is re-keyed back to it from the slot's position. Bytes kept by the reader
 //! (`EVN2`, `STRC`, `STR1`) go back while they still match the model.
 
 use std::borrow::Cow;
@@ -246,11 +247,12 @@ fn write_modules(writer: &mut ChunkWriter, modules: &[ModuleInstance]) -> Result
 /// A kit's `PADS`, its slots and its unknown chunks: what follows the `RSMP` prefix, or the `.tmpl` magic.
 fn write_kit(writer: &mut ChunkWriter, kit: &DrumKit) -> Result<(), FlmError> {
     writer.chunk(*b"PADS", |writer| writer.raw(&kit.file.pads))?;
-    // Each slot on its pad (its position), in slot-id order.
-    let mut slots: Vec<(usize, &SamplerSlot)> = kit.slots.iter().enumerate().collect();
-    slots.sort_by_key(|(_, slot)| slot.file.id);
-    for (pad, slot) in slots {
-        writer.chunk(*b"SMPl", |writer| write_slot(writer, slot, pad as f64))?;
+    // Each slot on the pad its `MAIN`@4 names (kept in its file state), in the kit's own order: the order
+    // a reader lists the kit in, so a kit's slots stay where they are across a save.
+    for slot in &kit.slots {
+        writer.chunk(*b"SMPl", |writer| {
+            write_slot(writer, slot, Some(slot.file.pad_index))
+        })?;
     }
     write_raw(writer, &kit.file.unknown_chunks)
 }
@@ -443,6 +445,21 @@ fn write_channel(writer: &mut ChunkWriter, channel: &Channel, row: usize) -> Res
             writer.chunk(*b"SEND", |writer| write_send(writer, send))?;
         }
     }
+    // The kit's pad indexes by slot position, for re-keying its drum hits back (`write_clip`); empty when
+    // they are 0, 1, 2 … in slot order, when the model's keys already are the file's.
+    let drum_pads: Vec<f64> = match &channel.drum_kit {
+        Some(kit) => kit.slots.iter().map(|slot| slot.file.pad_index).collect(),
+        None => Vec::new(),
+    };
+    let drum_pads: &[f64] = if drum_pads
+        .iter()
+        .enumerate()
+        .all(|(index, &pad)| pad == index as f64)
+    {
+        &[]
+    } else {
+        &drum_pads
+    };
     // Automation lanes after the others, in file order. The master's tempo lane (Honeydew's own) is an `HDTk`, a
     // `TRKH` by another name, which a reader that does not know it skips as an unknown chunk.
     let mut lanes: Vec<&Lane> = channel.lanes.iter().collect();
@@ -450,7 +467,7 @@ fn write_channel(writer: &mut ChunkWriter, channel: &Channel, row: usize) -> Res
     for lane in lanes {
         let tempo = channel.kind == ChannelKind::Master && lane.target == Some(TEMPO_TARGET);
         let id = if tempo { *b"HDTk" } else { *b"TRKH" };
-        writer.chunk(id, |writer| write_lane(writer, lane))?;
+        writer.chunk(id, |writer| write_lane(writer, lane, drum_pads))?;
     }
     // Honeydew's own MIDI input, only when set (`flm::read` reads it back; FL Studio Mobile skips it): `vstr32` the
     // device ("" for All) and `u32` the MIDI channel 1…16 (0 for All).
@@ -511,7 +528,7 @@ fn desc_target(lane: &Lane) -> (i32, i32) {
     }
 }
 
-fn write_lane(writer: &mut ChunkWriter, lane: &Lane) -> Result<(), FlmError> {
+fn write_lane(writer: &mut ChunkWriter, lane: &Lane, drum_pads: &[f64]) -> Result<(), FlmError> {
     let (instance, param) = desc_target(lane);
     writer.chunk(*b"DESc", |writer| {
         writer.u8(lane.kind as u8)?;
@@ -534,7 +551,7 @@ fn write_lane(writer: &mut ChunkWriter, lane: &Lane) -> Result<(), FlmError> {
     clips.sort_by_key(|clip| clip.start_tick);
     for clip in clips {
         writer.chunk(*b"CLIP", |writer| {
-            write_clip(writer, clip, lane.kind, param)
+            write_clip(writer, clip, lane.kind, param, drum_pads)
         })?;
     }
     // A hidden track (Honeydew's own) holds an empty `HDHd`, which a reader that does not know it skips.
@@ -553,6 +570,7 @@ fn write_clip(
     clip: &Clip,
     kind: LaneKind,
     param: i32,
+    drum_pads: &[f64],
 ) -> Result<(), FlmError> {
     writer.u32(clip.start_tick)?;
     writer.raw(&MAGIC_CL02)?;
@@ -572,18 +590,27 @@ fn write_clip(
         Ok(())
     })?;
     if let Some(slot) = &clip.file.sample {
-        writer.chunk(*b"CLSm", |writer| write_slot(writer, slot, -1.0))?;
+        writer.chunk(*b"CLSm", |writer| write_slot(writer, slot, None))?;
     }
     writer.chunk(*b"EVN2", |writer| {
+        // A drum lane's hits are keyed by slot position in the model and by pad index in the file:
+        // `drum_pads` (a slot's pad index by its position, empty when they are 0, 1, 2 …) keys them back,
+        // for the kept-bytes check and the encode alike.
+        let rekeyed;
+        let events: &[Event] = if kind == LaneKind::Drums && !drum_pads.is_empty() {
+            rekeyed = unrekey_hits(&clip.events, drum_pads);
+            &rekeyed
+        } else {
+            &clip.events
+        };
         // Kept bytes go back while they still decode to the events (and, on automation, still name the param).
         if let Some(raw) = &clip.file.raw_events.0
-            && decode_events(raw, kind, param, &mut { usize::MAX }).as_deref()
-                == Some(&clip.events[..])
+            && decode_events(raw, kind, param, &mut { usize::MAX }).as_deref() == Some(events)
             && (kind != LaneKind::Automation || keys_name(raw, param))
         {
             return writer.raw(raw);
         }
-        let bytes = encode_events(&clip.events, kind, param)
+        let bytes = encode_events(events, kind, param)
             .ok_or_else(|| FlmError::new("EVN2", FlmErrorKind::BadValue))?;
         writer.raw(&bytes)
     })?;
@@ -620,6 +647,26 @@ fn keys_name(raw: &[u8], param: i32) -> bool {
 fn automation_key(param: i32) -> i16 {
     let max = i32::from(i16::MAX);
     param.saturating_add(1).clamp(-max, max) as i16
+}
+
+/// The reader's re-key (`flm::read::rekey_hits`), backwards: a drum hit's key from its slot's position to
+/// the pad index the slot sits on (`pads`, by position). A hit past the slots, or on a slot whose pad index
+/// is no whole pad number in range, keeps its key.
+fn unrekey_hits(events: &[Event], pads: &[f64]) -> Vec<Event> {
+    events
+        .iter()
+        .map(|event| {
+            let mut event = *event;
+            if let Event::Drum { pad, .. } = &mut event
+                && let Some(&index) = pads.get(usize::from(*pad))
+                && index.fract() == 0.0
+                && (0.0..=255.0).contains(&index)
+            {
+                *pad = index as u8;
+            }
+            event
+        })
+        .collect()
 }
 
 /// The `EVN2` payload of `events` on a lane of `kind` with `DESc` param `param`: 20-byte records sorted by
@@ -727,17 +774,18 @@ pub(super) fn encode_events(events: &[Event], kind: LaneKind, param: i32) -> Opt
     Some(bytes)
 }
 
-/// A slot on pad `pad_index` (−1 for an audio clip's).
+/// A kit slot on its pad (`Some` its `MAIN`@4 pad index), or an audio clip's slot (`None`: it sits on no
+/// pad, and writes −1).
 fn write_slot(
     writer: &mut ChunkWriter,
     slot: &SamplerSlot,
-    pad_index: f64,
+    pad_index: Option<f64>,
 ) -> Result<(), FlmError> {
     let file = &slot.file;
     writer.raw(&MAGIC_SL02)?;
     writer.chunk(*b"MAIN", |writer| {
         writer.i32(-1)?;
-        writer.f64(pad_index)?;
+        writer.f64(pad_index.unwrap_or(-1.0))?;
         writer.char::<512>(&slot.name)?;
         writer.char::<512>(&slot.folder.replace('\\', "/"))?;
         writer.u8(file.reverse.into())?;
@@ -760,7 +808,7 @@ fn write_slot(
     })?;
     // A pad's mode is written as 1 exactly when its ratio is not 1; an audio clip's is its SYNC
     // button's. Kept bytes go back only while they hold what would be written.
-    let mode = if pad_index >= 0.0 {
+    let mode = if pad_index.is_some() {
         u8::from(file.stretch_ratio != 1.0)
     } else {
         file.stretch_mode
