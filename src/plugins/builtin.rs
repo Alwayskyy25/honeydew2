@@ -53,8 +53,6 @@ const ENTRIES: &[*const c_void] = &lemon_plugins![
     lemon_vocoder,
     press,
     pulp_filter,
-    lemon_additive,
-    lemon_pitch,
 ];
 
 /// Each one's VST3 copy's class id, by CLAP id: upstream's `Vst3Plugin::VST3_CLASS_ID` (`plugins/*/src/lib.rs`), which
@@ -347,18 +345,6 @@ mod tests {
             row("Lemon Vocoder", "lemon-vocoder", "LemonStudioVocdr"),
             row("Press", "press", "LemonStudioPress"),
             row("Pulp Filter", "pulp-filter", "LemonStudioPulpF"),
-            // Honeydew additions: Lemon Additive (Harmor-style additive synth) and Lemon Pitch
-            // (Newtone-style pitch editor), neither with a VST3 copy.
-            (
-                "Lemon Additive",
-                "clap:com.lemon-studio.lemon-additive".to_string(),
-                None,
-            ),
-            (
-                "Lemon Pitch",
-                "clap:com.lemon-studio.lemon-pitch".to_string(),
-                None,
-            ),
         ];
         let want: Vec<_> = (want.iter())
             .map(|(n, u, c)| (*n, u.as_str(), c.clone()))
