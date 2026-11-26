@@ -640,8 +640,9 @@ impl Reader {
             // rewritten).
             slot.file.stretch_mode = u8::from(slot.file.stretch_ratio != 1.0);
         }
-        // A slot sits on the pad its `MAIN` pad index names: slot i on pad i.
-        slots.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // The kit keeps the file's slot order: FL Studio Mobile lists a kit's slots as they are stored,
+        // which need not be pad order (a sound added later sits on whatever pad was free). Each slot keeps
+        // its `MAIN` pad index in its file state; `settle_channel` re-keys the hits from it.
         let (pads, slots) = slots.into_iter().unzip();
         kit.slots = slots;
         Ok((kit, pads))
@@ -747,6 +748,7 @@ impl Reader {
             ) = state;
             slot.file.raw_stretch_state = Raw(Some(state));
         }
+        slot.file.pad_index = pad_index;
         Ok((pad_index, slot))
     }
 
