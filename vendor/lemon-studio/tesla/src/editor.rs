@@ -207,6 +207,8 @@ pub enum Cmd {
     New,
     Open,
     Save(Depth),
+    /// Export the current sample into the sample library (no dialog; see `Logic::export_library`).
+    Export,
     About,
     Properties,
     Format(Format),
@@ -2115,6 +2117,7 @@ impl Logic {
                 m.add(item("Load sample...").shortcut("Ctrl+O"), Cmd::Open);
                 m.add(item("Save sample as...").shortcut("Ctrl+S").enabled(has), Cmd::Save(Depth::Own));
                 m.add(item("Save sample as 24Bit .wav file...").enabled(has), Cmd::Save(Depth::Int24));
+                m.add(item("Export to sample library").enabled(has), Cmd::Export);
                 m.sep(Cmd::None);
                 m.add(item("About Tesla"), Cmd::About);
             }
@@ -2323,6 +2326,11 @@ impl Logic {
             Cmd::Save(depth) => {
                 if self.doc(|d| d.frames()) > 0 {
                     acts.push(Act::Save(depth));
+                }
+            }
+            Cmd::Export => {
+                if self.doc(|d| d.frames()) > 0 {
+                    self.export_library();
                 }
             }
             Cmd::About => self.hint = about(),
@@ -2554,6 +2562,30 @@ impl Logic {
     /// The suggested file name for Save.
     pub fn save_name(&self) -> String {
         self.doc(|d| format!("{}.wav", file_stem(&d.title())))
+    }
+
+    /// Exports the current sample (or the selection, as Send and drag-out use) into the sample library,
+    /// under its Save name and with no dialog: written through `os_plugkit::save_file`, which on Honeydew
+    /// keeps it in the user library (My Recordings), where the sample picker and every other plugin can
+    /// load it. The library counterpart of drag-out, for hosts with no drag source.
+    pub fn export_library(&mut self) {
+        let name = self.save_name();
+        self.export_to(Path::new(&name));
+    }
+
+    /// The export itself, to an explicit path (the library export passes the sample's Save name).
+    pub fn export_to(&mut self, path: &Path) {
+        let Some(s) = self.doc(|d| d.copy()) else {
+            self.hint = "Nothing to export".into();
+            return;
+        };
+        match os_plugkit::save_file(path, wav::write(&s, Depth::Own)) {
+            Ok(()) => {
+                let shown = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "sample.wav".into());
+                self.hint = format!("Exported {shown} to the sample library");
+            }
+            Err(e) => self.hint = format!("Could not export: {e}"),
+        }
     }
 
     /// Pastes WAV bytes from the system clipboard, or the editor's own clipboard without them.
@@ -4544,6 +4576,25 @@ mod tests {
         // The time at the lane's left: left of its text, on the backing; over it, the spectrogram.
         assert!(bright(lane.x + 2.0, lane.bottom() - 9.0) <= 0x58, "{:x}", bright(lane.x + 2.0, lane.bottom() - 9.0));
         assert!(bright(lane.x + 2.0, lane.bottom() - 20.0) > 0x58, "{:x}", bright(lane.x + 2.0, lane.bottom() - 20.0));
+    }
+
+    /// The library export writes the current sample as a readable, non-silent WAV.
+    #[test]
+    fn export_writes_the_sample_to_a_wav() {
+        let mut l = logic();
+        load(&mut l, sine(4410));
+        let path = std::env::temp_dir().join("tesla-export-test.wav");
+        l.export_to(&path);
+        let bytes = std::fs::read(&path).expect("the export wrote a file");
+        let back = wav::read(&bytes).expect("the exported WAV reads back");
+        assert_eq!(back.frames(), 4410);
+        let peak = back.ch.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.2, "exported sample should be audible, peak {peak}");
+        assert!(l.hint.contains("Exported"), "hint: {}", l.hint);
+        // The File menu offers the export whenever a sample is loaded.
+        let m = l.menu(&MenuReq::Main(MenuId::File));
+        assert_eq!(m.find("Export to sample library"), Some(Cmd::Export));
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Sending names the arranger, in the tool's hint and in the answer.
