@@ -39,6 +39,8 @@ sha2 = { version = "0.10.9", default-features = false }
 # `src/plugins/builtin.rs`'s `lemon_plugins!` list.
 lemon-3x-osc = { path = "vendor/lemon-studio/lemon-3x-osc", features = ["linked", "embed"] }
 lemon-sampler = { path = "vendor/lemon-studio/lemon-sampler", features = ["linked", "embed"] }
+lemon-additive = { path = "vendor/lemon-studio/lemon-additive", features = ["linked", "embed"] }
+lemon-pitch = { path = "vendor/lemon-studio/lemon-pitch", features = ["linked", "embed"] }
 lemon-parametric-eq-2 = { path = "vendor/lemon-studio/lemon-parametric-eq-2", features = ["linked", "embed"] }
 lemon-soft-clipper = { path = "vendor/lemon-studio/lemon-soft-clipper", features = ["linked", "embed"] }
 lemon-fast-distortion = { path = "vendor/lemon-studio/lemon-fast-distortion", features = ["linked", "embed"] }
