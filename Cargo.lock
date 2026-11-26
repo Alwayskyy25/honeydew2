@@ -1974,7 +1974,6 @@ dependencies = [
  "honeydew-audio",
  "jni 0.21.1",
  "lemon-3x-osc",
- "lemon-additive",
  "lemon-balance",
  "lemon-chorus",
  "lemon-delay",
@@ -1986,7 +1985,6 @@ dependencies = [
  "lemon-parametric-eq-2",
  "lemon-peak-controller",
  "lemon-phaser",
- "lemon-pitch",
  "lemon-sampler",
  "lemon-slicer",
  "lemon-soft-clipper",
@@ -2355,18 +2353,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lemon-additive"
-version = "0.0.1"
-dependencies = [
- "nih_plug",
- "os-hostlink",
- "os-plugkit",
- "os-theme",
- "os-ui",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "lemon-balance"
 version = "0.0.1"
 dependencies = [
@@ -2483,21 +2469,6 @@ dependencies = [
  "lemon-small-fx",
  "nih_plug",
  "os-plugkit",
-]
-
-[[package]]
-name = "lemon-pitch"
-version = "0.0.1"
-dependencies = [
- "host-rfd",
- "nih_plug",
- "os-dsp",
- "os-engine",
- "os-hostlink",
- "os-plugkit",
- "os-theme",
- "os-ui",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
