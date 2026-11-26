@@ -8,13 +8,13 @@
 //! the other Lemon instruments' editor pattern. Edits show and sound at once (`os_plugkit::vals`).
 
 use std::any::Any;
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 
 use nih_plug::prelude::*;
+use os_plugkit::MenuDef;
 use os_plugkit::live::LiveEdits;
 use os_plugkit::vals::Vals;
-use os_plugkit::MenuDef;
 use os_ui::kit::menu::{MenuItem, MenuStyle};
 
 use crate::params::AdditiveParams;
@@ -50,17 +50,33 @@ impl AdditiveEditor {
 }
 
 impl Editor for AdditiveEditor {
-    fn spawn(&self, parent: ParentWindowHandle, context: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
+    fn spawn(
+        &self,
+        parent: ParentWindowHandle,
+        context: Arc<dyn GuiContext>,
+    ) -> Box<dyn Any + Send> {
         let scale = f32::from_bits(self.scale.load(Ordering::Relaxed));
         match parent {
             #[cfg(any(target_os = "linux", all(feature = "embed", not(target_os = "macos"))))]
-            ParentWindowHandle::X11Window(window) => {
-                Box::new(gui::open(window, scale, self.params.clone(), self.live.clone(), context, &self.slot))
-            }
+            ParentWindowHandle::X11Window(window) => Box::new(gui::open(
+                window,
+                scale,
+                self.params.clone(),
+                self.live.clone(),
+                context,
+                &self.slot,
+            )),
             #[cfg(target_os = "macos")]
             ParentWindowHandle::AppKitNsView(view) => {
                 let scale = os_plugkit::gui::backing_scale(view as usize);
-                Box::new(gui::open(view as usize, scale, self.params.clone(), self.live.clone(), context, &self.slot))
+                Box::new(gui::open(
+                    view as usize,
+                    scale,
+                    self.params.clone(),
+                    self.live.clone(),
+                    context,
+                    &self.slot,
+                ))
             }
             // Elsewhere no editor opens yet (Honeydew hosts the editor itself through `os-plugkit`'s embed).
             _ => {
@@ -148,8 +164,8 @@ pub enum Btn {
 enum Drag {
     /// Knob: `v` = the unrounded normalised value the drag has reached.
     Knob { id: String, v: f32 },
-    /// Spectrum band of the shown part.
-    Band { id: String },
+    /// Painting the shown part's harmonic spectrum: the last partial painted.
+    Spec { last: usize },
 }
 
 pub struct Logic {
@@ -164,9 +180,22 @@ pub struct Logic {
 }
 
 impl Logic {
-    pub fn new(params: Arc<AdditiveParams>, live: Arc<LiveEdits>, ctx: Option<Arc<dyn GuiContext>>) -> Self {
+    pub fn new(
+        params: Arc<AdditiveParams>,
+        live: Arc<LiveEdits>,
+        ctx: Option<Arc<dyn GuiContext>>,
+    ) -> Self {
         let vals = Vals::new(&*params, live, ctx);
-        Logic { vals, params, view: ViewState::default(), hits: Vec::new(), drag: None, hint: String::new(), copied: None, hosted: false }
+        Logic {
+            vals,
+            params,
+            view: ViewState::default(),
+            hits: Vec::new(),
+            drag: None,
+            hint: String::new(),
+            copied: None,
+            hosted: false,
+        }
     }
 
     pub fn dragging(&self) -> bool {
@@ -174,7 +203,11 @@ impl Logic {
     }
 
     fn hit(&self, x: f32, y: f32) -> Option<Target> {
-        self.hits.iter().rev().find(|h| h.r.contains(x, y)).map(|h| h.t.clone())
+        self.hits
+            .iter()
+            .rev()
+            .find(|h| h.r.contains(x, y))
+            .map(|h| h.t.clone())
     }
 
     fn hint_for(&self, t: Option<&Target>) -> String {
@@ -189,27 +222,95 @@ impl Logic {
         self.vals.edit(id, d);
     }
 
-    /// The value a spectrum band takes at painted-frame y.
-    fn band_value(&self, i: usize, y: f32) -> f32 {
-        let area = view::spectrum_rect();
-        let bw = area.w / crate::params::BANDS as f32;
-        let top = area.y + 8.0;
-        let h = area.h - 16.0;
-        let _ = bw;
-        let _ = i;
-        ((top + h - y) / h).clamp(0.0, 1.0)
+    /// Paints the spectrum level at (x, y) into the shown part's spectrum, filling the columns
+    /// between the last painted partial and this one so fast strokes stay continuous.
+    fn paint_spec(&mut self, x: f32, y: f32) {
+        let k = view::spec_at_x(x);
+        let v = view::spec_value_at_y(y);
+        let part = self.view.part as usize;
+        let last = match &self.drag {
+            Some(Drag::Spec { last }) => Some(*last),
+            _ => None,
+        };
+        match last {
+            Some(l0) => {
+                let (a, b) = if l0 <= k { (l0, k) } else { (k, l0) };
+                for i in a..=b {
+                    self.params.set_spectrum(part, i, v);
+                }
+            }
+            None => self.params.set_spectrum(part, k, v),
+        }
+        self.drag = Some(Drag::Spec { last: k });
+        self.hint = format!("Partial {}: {:.0} %", k + 1, v * 100.0);
+    }
+
+    /// Applies a spectrum preset to the shown part.
+    fn spec_preset(&mut self, p: u8) {
+        let vals: Vec<f32> = (0..crate::params::PARTIALS)
+            .map(|k| match p {
+                0 => 1.0,
+                1 => 1.0 / (k as f32 + 1.0).sqrt(),
+                2 => {
+                    if k % 2 == 0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                _ => {
+                    if k == 0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+            })
+            .collect();
+        self.params.set_spectrum_all(self.view.part as usize, &vals);
+    }
+
+    /// Copies the shown part's parameter values onto the other part (Harmor's Copy part).
+    fn copy_part(&mut self) {
+        let (from, to) = if self.view.part == 0 {
+            ("aa_", "ab_")
+        } else {
+            ("ab_", "aa_")
+        };
+        let pairs: Vec<(String, String)> = self
+            .params
+            .param_map()
+            .iter()
+            .filter_map(|(pid, _, _)| {
+                pid.strip_prefix(from)
+                    .map(|rest| (pid.clone(), format!("{to}{rest}")))
+            })
+            .collect();
+        for (src, dst) in pairs {
+            let v = self.vals.norm(&src);
+            self.vals.edit(&dst, v);
+        }
+        // The spectrum is patch data, not a parameter: copy it across too.
+        let spec = self.params.spectrum(self.view.part as usize);
+        self.params
+            .set_spectrum_all(1 - self.view.part as usize, &spec);
     }
 
     pub fn down(&mut self, x: f32, y: f32, btn: Btn, m: Mods, _dbl: bool) -> Vec<Act> {
         self.view.mouse = Some((x, y));
-        let Some(t) = self.hit(x, y) else { return vec![] };
+        let Some(t) = self.hit(x, y) else {
+            return vec![];
+        };
         let mut acts = vec![Act::Repaint];
         match (&t, btn) {
             (Target::Knob(id), Btn::Left) if m.alt => self.reset(id),
             (Target::Knob(id), Btn::Middle) => self.reset(id),
             (Target::Knob(id), Btn::Left) => {
                 self.vals.begin(id);
-                self.drag = Some(Drag::Knob { id: id.clone(), v: self.vals.norm(id) });
+                self.drag = Some(Drag::Knob {
+                    id: id.clone(),
+                    v: self.vals.norm(id),
+                });
                 self.view.pressed = Some(t.clone());
                 acts.push(Act::Lock);
             }
@@ -226,17 +327,15 @@ impl Logic {
             (Target::PartTab(p), Btn::Left) => {
                 self.view.part = *p;
             }
-            (Target::Band(i), Btn::Left) => {
-                let id = view::band_id(self.view.part, *i);
-                self.vals.begin(&id);
-                let v = self.band_value(*i, y);
-                self.vals.set(&id, v);
-                self.drag = Some(Drag::Band { id });
+            (Target::Spec(_), Btn::Left) => {
                 self.view.pressed = Some(t.clone());
+                self.paint_spec(x, y);
             }
-            (Target::Band(i), Btn::Right) => {
-                let id = view::band_id(self.view.part, *i);
-                acts.push(Act::Menu(MenuReq::Param(id), x, y));
+            (Target::SpecPreset(p), Btn::Left) => {
+                self.spec_preset(*p);
+            }
+            (Target::CopyPart, Btn::Left) => {
+                self.copy_part();
             }
             _ => {}
         }
@@ -246,7 +345,9 @@ impl Logic {
 
     /// Mouse movement during a locked drag (logical px since the last event).
     pub fn delta(&mut self, _dx: f32, dy: f32, m: Mods) -> Vec<Act> {
-        let Some(Drag::Knob { id, v }) = self.drag.clone() else { return vec![] };
+        let Some(Drag::Knob { id, v }) = self.drag.clone() else {
+            return vec![];
+        };
         let f = if m.ctrl { FINE } else { 1.0 };
         let v = (v - dy * f / KNOB_PX).clamp(0.0, 1.0);
         self.vals.set(&id, v);
@@ -256,10 +357,11 @@ impl Logic {
     }
 
     pub fn up(&mut self, _btn: Btn) -> Vec<Act> {
-        let Some(d) = self.drag.take() else { return vec![] };
-        match d {
-            Drag::Knob { id, .. } => self.vals.end(&id),
-            Drag::Band { id } => self.vals.end(&id),
+        let Some(d) = self.drag.take() else {
+            return vec![];
+        };
+        if let Drag::Knob { id, .. } = d {
+            self.vals.end(&id);
         }
         self.view.pressed = None;
         vec![Act::Repaint]
@@ -268,12 +370,8 @@ impl Logic {
     pub fn moved(&mut self, x: f32, y: f32, _m: Mods) -> Vec<Act> {
         self.view.mouse = Some((x, y));
         match self.drag.clone() {
-            Some(Drag::Band { id }) => {
-                // The band index is the id's tail ("band7").
-                let i: usize = id.rsplit("band").next().and_then(|s| s.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1));
-                let v = self.band_value(i, y);
-                self.vals.set(&id, v);
-                self.hint = format!("{}: {}", view::pretty(&id), self.vals.text(&id));
+            Some(Drag::Spec { .. }) => {
+                self.paint_spec(x, y);
                 vec![Act::Repaint]
             }
             Some(Drag::Knob { .. }) => vec![Act::Repaint],
@@ -293,16 +391,19 @@ impl Logic {
 
     /// Wheel: knobs step by 1/32 of their range, bands by 1/20, steppers by one step.
     pub fn wheel(&mut self, x: f32, y: f32, notches: f32, _m: Mods) -> Vec<Act> {
-        let Some(t) = self.hit(x, y) else { return vec![] };
+        let Some(t) = self.hit(x, y) else {
+            return vec![];
+        };
         match &t {
             Target::Knob(id) => {
                 let v = (self.vals.norm(id) + notches.signum() / 32.0).clamp(0.0, 1.0);
                 self.vals.edit(id, v);
             }
-            Target::Band(i) => {
-                let id = view::band_id(self.view.part, *i);
-                let v = (self.vals.norm(&id) + notches.signum() / 20.0).clamp(0.0, 1.0);
-                self.vals.edit(&id, v);
+            Target::Spec(k) => {
+                let part = self.view.part as usize;
+                let cur = self.params.spectrum(part)[*k];
+                let v = (cur + notches.signum() / 20.0).clamp(0.0, 1.0);
+                self.params.set_spectrum(part, *k, v);
             }
             Target::Set(id, _) if id.ends_with("octave") || id == "unison" => {
                 let v = self.vals.plain(id) + notches.signum();
@@ -322,10 +423,17 @@ impl Logic {
                 m.add(MenuItem::item("Reset"), Cmd::Reset(id.clone()));
                 m.sep(Cmd::None);
                 m.add(MenuItem::item("Copy value"), Cmd::CopyValue(id.clone()));
-                m.add(MenuItem::item("Paste value").enabled(self.copied.is_some()), Cmd::PasteValue(id.clone()));
+                m.add(
+                    MenuItem::item("Paste value").enabled(self.copied.is_some()),
+                    Cmd::PasteValue(id.clone()),
+                );
                 m.add(MenuItem::item("Enter value..."), Cmd::TypeIn(id.clone()));
                 m.sep(Cmd::None);
-                m.add(MenuItem::item("Create automation clip").enabled(self.hosted || cfg!(feature = "embed")), Cmd::Automate(id.clone()));
+                m.add(
+                    MenuItem::item("Create automation clip")
+                        .enabled(self.hosted || cfg!(feature = "embed")),
+                    Cmd::Automate(id.clone()),
+                );
                 m
             }
         }
@@ -342,14 +450,23 @@ impl Logic {
                 }
             }
             Cmd::TypeIn(id) => return vec![Act::TypeIn(id, x, y)],
-            Cmd::Automate(id) => return self.param_index(&id).map(Act::Automate).into_iter().collect(),
+            Cmd::Automate(id) => {
+                return self
+                    .param_index(&id)
+                    .map(Act::Automate)
+                    .into_iter()
+                    .collect();
+            }
         }
         vec![Act::Repaint]
     }
 
     /// Position of `id` in the parameter list (the host's automation index).
     pub fn param_index(&self, id: &str) -> Option<usize> {
-        self.params.param_map().iter().position(|(pid, _, _)| pid == id)
+        self.params
+            .param_map()
+            .iter()
+            .position(|(pid, _, _)| pid == id)
     }
 
     /// The value text a type-in box starts with.
@@ -407,36 +524,55 @@ mod gui {
         last_page: usize,
     }
 
-    pub fn open(parent: px::Parent, scale: f32, params: Arc<AdditiveParams>, live: Arc<LiveEdits>, ctx: Arc<dyn GuiContext>, slot: &px::Slot) -> Option<px::EditorThread> {
+    pub fn open(
+        parent: px::Parent,
+        scale: f32,
+        params: Arc<AdditiveParams>,
+        live: Arc<LiveEdits>,
+        ctx: Arc<dyn GuiContext>,
+        slot: &px::Slot,
+    ) -> Option<px::EditorThread> {
         let scale = if scale > 0.0 { scale } else { 1.0 };
         let px = move |v: u32| (v as f32 * scale).round() as u32;
         let wake = slot.clone();
         let pages = vec![PageIcon::Plugin];
-        let link = Peer::register(parent as u64, pages, (view::EDITOR_W, view::HOSTED_EDITOR_H), move || px::notify(&wake));
+        let link = Peer::register(
+            parent as u64,
+            pages,
+            (view::EDITOR_W, view::HOSTED_EDITOR_H),
+            move || px::notify(&wake),
+        );
         let peer = link.clone();
-        let thread = px::spawn(parent, (px(view::EDITOR_W), px(view::EDITOR_H)), slot, move |win| {
-            let full = (px(view::W), px(view::H));
-            let Ok(canvas) = Canvas::new(full.0, full.1, scale) else { return };
-            let logic = Logic::new(params.clone(), live, Some(ctx));
-            let ed = Ed {
-                win,
-                canvas,
-                buf: Vec::new(),
-                crop: Vec::new(),
-                scale,
-                size: full,
-                params,
-                logic,
-                palette: os_plugkit::palette(),
-                last_sig: 0,
-                last_view: ViewState::default(),
-                last_hint: String::new(),
-                dirty: true,
-                link: peer,
-                last_page: 0,
-            };
-            ed.run();
-        });
+        let thread = px::spawn(
+            parent,
+            (px(view::EDITOR_W), px(view::EDITOR_H)),
+            slot,
+            move |win| {
+                let full = (px(view::W), px(view::H));
+                let Ok(canvas) = Canvas::new(full.0, full.1, scale) else {
+                    return;
+                };
+                let logic = Logic::new(params.clone(), live, Some(ctx));
+                let ed = Ed {
+                    win,
+                    canvas,
+                    buf: Vec::new(),
+                    crop: Vec::new(),
+                    scale,
+                    size: full,
+                    params,
+                    logic,
+                    palette: os_plugkit::palette(),
+                    last_sig: 0,
+                    last_view: ViewState::default(),
+                    last_hint: String::new(),
+                    dirty: true,
+                    link: peer,
+                    last_page: 0,
+                };
+                ed.run();
+            },
+        );
         if thread.is_none() {
             link.unregister();
         }
@@ -465,7 +601,9 @@ mod gui {
                     Input::Tick => self.poll(),
                     Input::Down { x, y, btn: b, dbl } => {
                         let (x, y) = self.to_view(x, y);
-                        let acts = self.logic.down(x, y, btn(b), self.mods(), dbl && b == Button::Left);
+                        let acts =
+                            self.logic
+                                .down(x, y, btn(b), self.mods(), dbl && b == Button::Left);
                         self.act(acts);
                     }
                     Input::Move { x, y } => {
@@ -474,7 +612,9 @@ mod gui {
                         self.act(acts);
                     }
                     Input::Delta { dx, dy } => {
-                        let acts = self.logic.delta(dx / self.scale, dy / self.scale, self.mods());
+                        let acts = self
+                            .logic
+                            .delta(dx / self.scale, dy / self.scale, self.mods());
                         self.act(acts);
                     }
                     Input::Up { .. } => {
@@ -508,15 +648,29 @@ mod gui {
         }
 
         fn crop_y(&self) -> u32 {
-            if self.logic.hosted { view::HOSTED_CROP_Y } else { view::CROP_Y }
+            if self.logic.hosted {
+                view::HOSTED_CROP_Y
+            } else {
+                view::CROP_Y
+            }
         }
 
         fn content(&self) -> (u32, u32) {
-            (view::EDITOR_W, if self.logic.hosted { view::HOSTED_EDITOR_H } else { view::EDITOR_H })
+            (
+                view::EDITOR_W,
+                if self.logic.hosted {
+                    view::HOSTED_EDITOR_H
+                } else {
+                    view::EDITOR_H
+                },
+            )
         }
 
         fn to_view(&self, x: f32, y: f32) -> (f32, f32) {
-            (x / self.scale + view::CROP_X as f32, y / self.scale + self.crop_y() as f32)
+            (
+                x / self.scale + view::CROP_X as f32,
+                y / self.scale + self.crop_y() as f32,
+            )
         }
 
         fn screen(&self, x: f32, y: f32) -> (i32, i32) {
@@ -528,7 +682,11 @@ mod gui {
         fn poll(&mut self) {
             let dirty = self.logic.vals.expire();
             let sig = self.logic.vals.signature();
-            if dirty || sig != self.last_sig || self.logic.view != self.last_view || self.logic.hint != self.last_hint {
+            if dirty
+                || sig != self.last_sig
+                || self.logic.view != self.last_view
+                || self.logic.hint != self.last_hint
+            {
                 self.dirty = true;
             }
             if self.logic.hint != self.last_hint {
@@ -585,11 +743,27 @@ mod gui {
 
         fn paint(&mut self) {
             self.dirty = false;
-            let hint = if self.logic.hosted { String::new() } else { self.logic.hint.clone() };
-            self.logic.hits = view::paint(&mut self.canvas, &self.palette, &self.logic.vals, &self.logic.view, &hint, self.logic.hosted);
+            let hint = if self.logic.hosted {
+                String::new()
+            } else {
+                self.logic.hint.clone()
+            };
+            let spec = self.logic.params.spectrum(self.logic.view.part as usize);
+            self.logic.hits = view::paint(
+                &mut self.canvas,
+                &self.palette,
+                &self.logic.vals,
+                &spec,
+                &self.logic.view,
+                &hint,
+                self.logic.hosted,
+            );
             self.last_sig = self.logic.vals.signature();
             self.last_view = self.logic.view.clone();
-            let (ox, oy) = ((view::CROP_X as f32 * self.scale).round() as u32, (self.crop_y() as f32 * self.scale).round() as u32);
+            let (ox, oy) = (
+                (view::CROP_X as f32 * self.scale).round() as u32,
+                (self.crop_y() as f32 * self.scale).round() as u32,
+            );
             let (cw, ch) = self.content();
             let w = ((cw as f32 * self.scale).round() as u32).min(self.size.0 - ox);
             let h = ((ch as f32 * self.scale).round() as u32).min(self.size.1 - oy);
@@ -612,28 +786,33 @@ mod tests {
     use crate::view;
 
     fn logic() -> Logic {
-        Logic::new(Arc::new(AdditiveParams::default()), Arc::new(LiveEdits::default()), None)
+        Logic::new(
+            Arc::new(AdditiveParams::default()),
+            Arc::new(LiveEdits::default()),
+            None,
+        )
     }
 
     fn paint(l: &mut Logic) {
         let mut canvas = os_ui::Canvas::new(view::W, view::H, 1.0).unwrap();
         let palette = os_theme::Palette::default();
-        l.hits = view::paint(&mut canvas, &palette, &l.vals, &l.view, "", false);
+        let spec = l.params.spectrum(l.view.part as usize);
+        l.hits = view::paint(&mut canvas, &palette, &l.vals, &spec, &l.view, "", false);
     }
 
     #[test]
-    fn a_band_drag_sets_the_band() {
+    fn a_spectrum_drag_draws_partials() {
         let mut l = logic();
         paint(&mut l);
         let area = view::spectrum_rect();
-        // Press at the top of band 3's column: near-full gain; then drag to the bottom: near zero.
-        let x = area.x + 2.5 * (area.w / 12.0);
-        l.down(x, area.y + 10.0, Btn::Left, Mods::default(), false);
-        let top = l.vals.norm("aa_band3");
-        assert!(top > 0.8, "band at top should be near 1, got {top}");
-        l.moved(x, area.y + area.h - 10.0, Mods::default());
-        let bot = l.vals.norm("aa_band3");
-        assert!(bot < 0.2, "band at bottom should be near 0, got {bot}");
+        // Press near the top of partial 3's column: near-full level; drag to the bottom: near zero.
+        let x = view::spec_x(2);
+        l.down(x, area.y + 4.0, Btn::Left, Mods::default(), false);
+        let top = l.params.spectrum(0)[2];
+        assert!(top > 0.8, "partial at top should be near 1, got {top}");
+        l.moved(x, area.y + area.h - 4.0, Mods::default());
+        let bot = l.params.spectrum(0)[2];
+        assert!(bot < 0.2, "partial at bottom should be near 0, got {bot}");
         l.up(Btn::Left);
     }
 
@@ -641,7 +820,21 @@ mod tests {
     fn part_tab_switches_the_shown_part() {
         let mut l = logic();
         paint(&mut l);
-        l.down(200.0, 91.0, Btn::Left, Mods::default(), false);
+        l.down(170.0, 66.0, Btn::Left, Mods::default(), false);
         assert_eq!(l.view.part, 1);
+    }
+
+    #[test]
+    fn copy_part_mirrors_the_shown_part() {
+        let mut l = logic();
+        paint(&mut l);
+        // Change a part A knob away from its default, then copy A onto B.
+        l.vals.edit("aa_prism", 0.7);
+        l.down(320.0, 66.0, Btn::Left, Mods::default(), false); // COPY A>B
+        assert!(
+            (l.vals.norm("ab_prism") - 0.7).abs() < 0.01,
+            "got {}",
+            l.vals.norm("ab_prism")
+        );
     }
 }
