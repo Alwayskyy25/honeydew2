@@ -4,7 +4,7 @@
 
 use honeydew::flm::chunk::{Chunk, ChunkIter, PrefixKind, file_chunks};
 use honeydew::flm::{read, write};
-use honeydew::song::{Raw, Song};
+use honeydew::song::{Event, LaneKind, Raw, Song};
 
 const OWNER: &[u8] = include_bytes!("fixtures/owner-fresh-song.flm");
 
@@ -148,6 +148,62 @@ fn the_owners_fresh_song_round_trips() {
     let (report, fresh) = round_trip("owner-fresh-song.flm", OWNER);
     assert!(report.is_empty(), "{report:#?}");
     assert!(fresh.is_empty(), "{fresh:#?}");
+}
+
+/// A kit FL Studio Mobile saved lists its slots in file order, which need not be pad order: in the owner's
+/// kit the Clap was added last (slot id 8) onto the free pad 2. The import keeps that order — the Clap is
+/// the eighth slot, on pad 2 — instead of sorting the slots by pad, and the hits the file keys by pad
+/// (0, 1, 2 here) land on the slots that own those pads.
+#[test]
+fn an_imported_kit_keeps_the_files_slot_order() {
+    let song = read(OWNER).unwrap();
+    let channel = (song.channels.iter())
+        .find(|channel| channel.name == "Drums 2")
+        .expect("the owner's Drums 2 channel");
+    let kit = channel.drum_kit.as_ref().expect("a drum kit");
+    let names: Vec<&str> = kit.slots.iter().map(|slot| slot.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "FL 808 Kick",
+            "FL 808 Snare",
+            "FL 808 CH",
+            "FL 808 OH",
+            "FL 808 OH",
+            "HouseGen Crash 02",
+            "FL 808 Crash",
+            "FL DNC Clap 1",
+            "FL 808 Clav",
+            "FL 808 Conga",
+            "FL 808 Tom",
+        ]
+    );
+    let pads: Vec<f64> = kit.slots.iter().map(|slot| slot.file.pad_index).collect();
+    assert_eq!(
+        pads,
+        [0.0, 1.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2.0, 8.0, 9.0, 10.0]
+    );
+    assert_eq!(kit.slots[7].name, "FL DNC Clap 1");
+    // The file's hits are keyed 0, 1, 2 (Kick, Snare, Clap by pad); in the model the Clap's hits sit on
+    // its position, 7, and no hit names any other slot.
+    let mut struck: Vec<usize> = Vec::new();
+    for lane in channel
+        .lanes
+        .iter()
+        .filter(|lane| lane.kind == LaneKind::Drums)
+    {
+        for event in lane.clips.iter().flat_map(|clip| &clip.events) {
+            let Event::Drum { pad, .. } = event else {
+                panic!("a drum lane holds {event:?}");
+            };
+            struck.push(usize::from(*pad));
+        }
+    }
+    struck.sort_unstable();
+    struck.dedup();
+    assert_eq!(struck, [0, 1, 7]);
+    // And the song writes back byte for byte.
+    assert_eq!(write(&song).unwrap(), OWNER);
 }
 
 #[test]
