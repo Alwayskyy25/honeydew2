@@ -515,12 +515,16 @@ impl Default for KitFileState {
     }
 }
 
-/// Sampler-slot fields beyond the slot model. The `MAIN` pad index (@4) is not stored: a kit slot's is its
-/// position in the kit, an audio clip's is −1.
+/// Sampler-slot fields beyond the slot model.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlotFileState {
     /// `LINk` @0: unique in the kit, ≥ 1 ([`super::DrumKit::insert_slot`]). Given on load for audio clips.
     pub id: u32,
+    /// `MAIN` @4: the pad index the slot sits on, the key a file's drum hits use. A kit's slots are kept in
+    /// the order the file lists them, which need not be pad order (a sound added later sits on whatever pad
+    /// was free), so this is stored per slot rather than read off its position. −1 for an audio clip's slot
+    /// (it sits on no pad) and for a slot the app has not placed on a pad.
+    pub pad_index: f64,
     /// `MAIN` @1036.
     pub reverse: bool,
     /// `MAIN` @1037, beats.
@@ -562,6 +566,7 @@ impl Default for SlotFileState {
     fn default() -> Self {
         Self {
             id: 0,
+            pad_index: -1.0,
             reverse: false,
             beat_offset: 0.0,
             beat_offset_control: 0.5,
