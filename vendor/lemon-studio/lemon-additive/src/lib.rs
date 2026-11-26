@@ -26,7 +26,12 @@ pub struct LemonAdditive {
 
 impl Default for LemonAdditive {
     fn default() -> Self {
-        LemonAdditive { params: Arc::new(AdditiveParams::default()), engine: Engine::new(), sample_rate: 44100.0, bend: 0.0 }
+        LemonAdditive {
+            params: Arc::new(AdditiveParams::default()),
+            engine: Engine::new(),
+            sample_rate: 44100.0,
+            bend: 0.0,
+        }
     }
 }
 
@@ -36,7 +41,11 @@ impl Plugin for LemonAdditive {
     const URL: &'static str = "https://github.com/ItsAlphaNeon/Lemon-Studio";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout { main_input_channels: None, main_output_channels: NonZeroU32::new(2), ..AudioIOLayout::const_default() }];
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: None,
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
     const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
@@ -51,7 +60,12 @@ impl Plugin for LemonAdditive {
         Some(Box::new(editor::AdditiveEditor::new(self.params.clone())))
     }
 
-    fn initialize(&mut self, _audio_io_layout: &AudioIOLayout, buffer_config: &BufferConfig, _context: &mut impl InitContext<Self>) -> bool {
+    fn initialize(
+        &mut self,
+        _audio_io_layout: &AudioIOLayout,
+        buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
         self.engine.set_sample_rate(buffer_config.sample_rate);
         true
@@ -62,14 +76,24 @@ impl Plugin for LemonAdditive {
         self.bend = 0.0;
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
         let frames = buffer.samples();
         if frames == 0 {
             return ProcessStatus::Normal;
         }
         while let Some(ev) = context.next_event() {
             match ev {
-                NoteEvent::NoteOn { note, channel, velocity, .. } => self.engine.note_on(&self.params, note, channel, velocity),
+                NoteEvent::NoteOn {
+                    note,
+                    channel,
+                    velocity,
+                    ..
+                } => self.engine.note_on(&self.params, note, channel, velocity),
                 NoteEvent::NoteOff { note, channel, .. } => self.engine.note_off(note, channel),
                 NoteEvent::MidiPitchBend { value, .. } => self.bend = (value - 0.5) * 4.0,
                 NoteEvent::MidiCC { cc, value, .. } if cc == 120 || cc == 123 => {
@@ -82,7 +106,8 @@ impl Plugin for LemonAdditive {
         // Render into planar scratch, then copy into the buffer's channels.
         let mut lb = vec![0.0f32; frames];
         let mut rb = vec![0.0f32; frames];
-        self.engine.render(&self.params, self.bend, &mut lb, &mut rb);
+        self.engine
+            .render(&self.params, self.bend, &mut lb, &mut rb);
         let chans = buffer.as_slice();
         if !chans.is_empty() {
             chans[0][..frames].copy_from_slice(&lb);
@@ -96,10 +121,15 @@ impl Plugin for LemonAdditive {
 
 impl ClapPlugin for LemonAdditive {
     const CLAP_ID: &'static str = "com.lemon-studio.lemon-additive";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("Additive synthesizer with two parts and a drawable harmonic spectrum");
+    const CLAP_DESCRIPTION: Option<&'static str> =
+        Some("Additive synthesizer with two parts and a drawable harmonic spectrum");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
-    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Instrument, ClapFeature::Synthesizer, ClapFeature::Stereo];
+    const CLAP_FEATURES: &'static [ClapFeature] = &[
+        ClapFeature::Instrument,
+        ClapFeature::Synthesizer,
+        ClapFeature::Stereo,
+    ];
 }
 
 os_plugkit::linked_clap_entry!(LemonAdditive);
