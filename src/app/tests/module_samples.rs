@@ -176,7 +176,7 @@ fn a_cancel_changes_nothing_and_a_user_file_takes_its_user_path() {
         .params[1] = 5.0 / 6.0;
     next_shape(&mut rig);
     assert_eq!(rig.overlays(), [Overlay::Rack(CHANNEL), picker()]);
-    for row in [0, 1, 0] {
+    for row in [0, 7, 0] {
         picker_row(&mut rig, row);
     }
     assert_eq!(shape_path(osc(&rig)), Some(user_path(&file)));
@@ -243,7 +243,7 @@ fn a_file_that_does_not_decode_shows_the_error_and_changes_nothing() {
     rig.frame(vec![]);
     let song = rig.app.song.clone();
     rig.take();
-    for row in [0, 1, 0] {
+    for row in [0, 7, 0] {
         picker_row(&mut rig, row);
     }
     let lines = message(&rig).expect("a message");
@@ -267,7 +267,7 @@ fn a_pick_tries_a_missing_file_again() {
         .files
         .keep_user_file(Path::new(file), wav(&[0, 9000, 0, -9000]));
     pick_custom(&mut rig);
-    for row in [0, 1, 0] {
+    for row in [0, 7, 0] {
         picker_row(&mut rig, row);
     }
     assert_eq!(shape_path(osc(&rig)), Some(user_path(file)));
@@ -290,7 +290,7 @@ fn a_custom_shape_builds_its_table_on_the_worker_while_its_picker_hides_and_take
     (rig.app.files).keep_user_file(file, wav(&[0, 9000, 0, -9000]));
     pick_custom(&mut rig);
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     let (steps, shape) = (rig.app.history.steps(), osc(&rig).params[1]);
     let held = hold();
     super::rack_wiring::click_row(&mut rig, 0);
@@ -560,7 +560,7 @@ fn a_user_loop_takes_its_user_path_and_the_channel_going_closes_the_picker() {
             .with(("module panel", SLICER))
             .with(LOAD),
     );
-    for row in [0, 1, 0] {
+    for row in [0, 7, 0] {
         picker_row(&mut rig, row);
     }
     close_picker(&mut rig);
@@ -651,7 +651,7 @@ fn a_loop_decodes_on_the_worker_and_lands_with_autos_clip_in_one_undo_step() {
             .with(LOAD),
     );
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     let held = hold();
     super::rack_wiring::click_row(&mut rig, 0);
     rig.frame(vec![]);
@@ -700,7 +700,7 @@ fn a_loop_picks_slices_are_detected_on_the_worker() {
             .with(LOAD),
     );
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     let detects = crate::audio_engine::slicer::detects_here();
     super::rack_wiring::click_row(&mut rig, 0);
     super::rack_wiring::worker_done(&mut rig);
@@ -737,7 +737,7 @@ fn import_in_the_module_sample_picker_keeps_an_audio_file_in_my_samples() {
         };
         rig.app.navigate(Nav::Open(picker.clone()));
         picker_row(&mut rig, 0);
-        picker_row(&mut rig, 1);
+        picker_row(&mut rig, 7);
         rig.frame(vec![]);
         assert!(rig.color_of("Mine").is_none(), "{kind:?}");
         rig.click_id(Id::new("preset_picker").with("import"));
@@ -1076,7 +1076,7 @@ fn tesla_opens_from_the_picker_and_saves_into_my_recordings() {
     };
     assert_eq!(rig.overlays(), [Overlay::Rack(CHANNEL), picker]);
     // My Files, My Samples, the file, which the close opens.
-    for row in [0, 1, 0] {
+    for row in [0, 7, 0] {
         picker_row(&mut rig, row);
     }
     close_picker(&mut rig);
@@ -1198,7 +1198,7 @@ fn a_lemon_trios_sample_picker_previews_each_pick_and_the_plugin_opens_the_last(
         String::from_utf8_lossy(state).contains(file)
     };
     // My Files, My Samples, Kick: it plays, and the picker stays.
-    for row in [0, 1, 0] {
+    for row in [0, 7, 0] {
         picker_row(&mut rig, row);
     }
     rig.frame(vec![]);
