@@ -258,8 +258,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y libclang-dev
           sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.0.13004108'
           cargo install cargo-ndk --version 4.1.2 --locked
-      # honeydew2: base APK only (lighter Android build)
-      - name: Build signed base APK (no sounds bundled)
+      # Twice: with the sounds (-arm.apk), and without them (-arm-base.apk), which downloads them from the sound
+      # library's release and is what the in-app updater installs.
+      - name: Build signed APKs with and without sounds
         env:
           ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/honeydew-release.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -267,6 +268,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.0.13004108"
+          tools/android-dist.sh --release
           tools/android-dist.sh --release --base
       - name: Remove signing key
         if: always()
@@ -275,6 +277,7 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           files: |
+            target/honeydew-android-*-arm.apk
             target/honeydew-android-*-arm-base.apk
           fail_on_unmatched_files: true
 
