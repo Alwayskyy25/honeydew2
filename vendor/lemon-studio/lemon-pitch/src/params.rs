@@ -18,6 +18,13 @@ fn percent() -> Arc<dyn Fn(f32) -> String + Send + Sync> {
     Arc::new(|v| format!("{:.0} %", v * 100.0))
 }
 
+/// Scales the snap-to-scale correction can land on (index 0 = chromatic, i.e. every semitone).
+pub const SCALES: [&str; 3] = ["Chromatic", "Major", "Minor"];
+/// Pitch-class names for the scale root stepper.
+pub const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
 #[derive(Params)]
 pub struct PitchParams {
     /// The loaded sample's path (empty = none).
@@ -30,6 +37,12 @@ pub struct PitchParams {
     pub variation: FloatParam,
     #[id = "transition"]
     pub transition: FloatParam,
+    #[id = "snap"]
+    pub snap: BoolParam,
+    #[id = "scale"]
+    pub scale: IntParam,
+    #[id = "root"]
+    pub root: IntParam,
     #[id = "gain"]
     pub gain: FloatParam,
 }
@@ -46,6 +59,22 @@ impl Default for PitchParams {
             center: knob("Center", 1.0),
             variation: knob("Variation", 0.5),
             transition: knob("Transition", 0.3),
+            snap: BoolParam::new("Snap to scale", false),
+            scale: IntParam::new(
+                "Scale",
+                1,
+                IntRange::Linear {
+                    min: 0,
+                    max: SCALES.len() as i32 - 1,
+                },
+            )
+            .with_value_to_string(Arc::new(|v| {
+                SCALES[v.clamp(0, SCALES.len() as i32 - 1) as usize].to_string()
+            })),
+            root: IntParam::new("Scale root", 0, IntRange::Linear { min: 0, max: 11 })
+                .with_value_to_string(Arc::new(|v| {
+                    NOTE_NAMES[v.clamp(0, 11) as usize].to_string()
+                })),
             gain: knob("Gain", 0.9),
         }
     }
