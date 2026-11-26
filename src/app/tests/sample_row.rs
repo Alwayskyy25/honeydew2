@@ -148,10 +148,10 @@ fn the_icon_opens_the_picker_for_the_clips_slot_and_a_file_with_a_tempo_turns_sy
     (rig.app.files).keep_user_file(path, wav_with_tempo(90.0));
     rig.click_id(id(Ctl::Pick));
     assert_eq!(rig.overlays(), [Overlay::ClipSamplePicker(KEY)]);
-    // `My Files`, `My Samples` (after `My Recordings`), its first file.
+    // `My Files`, `My Samples` (row 7 of the whole user library), its first file.
     let steps = rig.app.history.steps();
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     picker_row(&mut rig, 0);
     rig.frame(vec![]);
     // It stays open, the sample strip playing the pick.
@@ -192,7 +192,7 @@ fn a_clip_sample_decodes_and_renders_its_sync_on_the_worker_and_the_last_pick_la
     }
     rig.click_id(id(Ctl::Pick));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     let (steps, renders) = (rig.app.history.steps(), rig.app.audio.samples.renders());
     let hold = crate::ui::views::preset_picker::WORKER_HOLD
         .lock()
@@ -285,7 +285,7 @@ fn the_icons_sample_pick_is_a_change() {
     rig.app.files.saved();
     rig.click_id(id(Ctl::Pick));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     picker_row(&mut rig, 0);
     assert!(rig.clip_slot().is_some());
     assert!(rig.app.files.modified());
@@ -371,7 +371,7 @@ fn replace_sample_swaps_it_in_every_clip_playing_it_keeping_their_params_in_one_
     rig.frame(vec![]);
     rig.click_id(egui::Id::new("clip_more").with((0_usize, 5_usize)));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     picker_row(&mut rig, 2);
     rig.frame(escape());
     rig.frame(vec![]);
