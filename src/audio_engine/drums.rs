@@ -106,7 +106,7 @@ impl Kit {
     }
 }
 
-/// The kit of channel `channel`, `None` without slots. Slot `i` is pad `i`. A slot plays what `samples` holds for it
+/// The kit of channel `channel`, `None` without slots. The pads here are the kit's slots in kit order. A slot plays what `samples` holds for it
 /// (its file, a built-in one-shot, or nothing), with its `STR1` stretch and pitch already rendered by the cache, or
 /// streaming in. The pads start at the default params: the engine's initial table sets the slot's own, through the
 /// same check as every other write, so a hostile value never reaches a voice. A send target that names no channel
