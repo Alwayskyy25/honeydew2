@@ -1,7 +1,10 @@
 //! The user's samples, for the drum view's sample picker: `Load Sample` in the drum row menu and the `+` add-drum
 //! button.
 //!
-//! - Folders: `My Samples` and `My Recordings`, in the user folder, the one that holds the presets.
+//! - Folders: the whole user folder (the picker's `My Files`), as FL Studio Mobile lists it: every one of the
+//!   user's own folders ([`MY_FOLDERS`] — `My Samples`, `My Recordings`, `My Tracks`, `My Songs`, …), any other
+//!   folder the user put there, and the audio files at its root. A file added to the user folder by hand is
+//!   listed, whatever of its folders holds it (issues #188, #155).
 //! - File types: `Audio Wave` (`.wav`), `Lossless FLAC Audio` (`.flac`) and `Compressed Audio` (`.mp3`, `.ogg`)
 //!   ([`SAMPLE_EXTS`]). `.m4a` is left out.
 //!
@@ -52,8 +55,9 @@ pub const IMPORT_FAILED: &str = "Import failed";
 const NOMEDIA: &str = ".nomedia";
 
 impl ProjectFiles {
-    /// The library the sample picker lists: the user folder holds [`SAMPLES_FOLDER`] and [`RECORDINGS_FOLDER`] (even
-    /// before they exist), and each of those its folders and [`SAMPLE_EXTS`] files. Read-only.
+    /// The library the sample picker lists: the user folder holds every one of its own folders ([`MY_FOLDERS`],
+    /// even before they exist) and whatever else the user put in it, and each folder its folders and
+    /// [`SAMPLE_EXTS`] files. Read-only.
     pub fn sample_library(&self) -> Box<dyn SongLibrary + '_> {
         Box::new(Samples(self))
     }
@@ -317,7 +321,19 @@ impl SongLibrary for Samples<'_> {
                 is_folder: true,
                 recency: 0,
             };
-            return Ok(vec![folder(SAMPLES_FOLDER), folder(RECORDINGS_FOLDER)]);
+            // The whole user library, as FL Studio Mobile's `My Files` lists it: the user's own folders, then
+            // whatever else is in the folder — a folder of the user's own making, an audio file at its root —
+            // so a file copied into the user folder by hand is listed wherever it was put (issues #188, #155).
+            let mut entries: Vec<SongEntry> = MY_FOLDERS.iter().map(|name| folder(name)).collect();
+            if let Ok(listed) = self.0.preset_library(&SAMPLE_EXTS).list(Some(dir)) {
+                let extra: Vec<SongEntry> = listed
+                    .into_iter()
+                    .filter(|entry| !entries.iter().any(|e| e.path == entry.path))
+                    .collect();
+                entries.extend(extra);
+            }
+            entries.sort_by(|a, b| a.path.cmp(&b.path));
+            return Ok(entries);
         }
         let mut entries = self.0.preset_library(&SAMPLE_EXTS).list(Some(dir))?;
         entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -410,14 +426,12 @@ mod tests {
         for path in audio.iter().chain([&take]).chain(&other) {
             files.keep_user_file(path, b"RIFF".to_vec());
         }
-        // The user folder holds the two sample folders, whatever else is there.
-        assert_eq!(
-            listed(&files, &user),
-            [
-                folder(&user, RECORDINGS_FOLDER),
-                folder(&user, SAMPLES_FOLDER)
-            ]
-        );
+        // The user folder lists its own folders (all of them, FL Studio Mobile's `My Files`), plus the loose
+        // audio file at its root; the preset in `My Presets` is not audio and stays unlisted as a file.
+        let mut root = vec![file(&user.join("Kick.wav"))];
+        root.extend(MY_FOLDERS.iter().map(|name| folder(&user, name)));
+        root.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(listed(&files, &user), root);
         let mut want: Vec<_> = audio.iter().map(|p| file(p)).collect();
         want.sort_by(|a, b| a.1.cmp(&b.1));
         assert_eq!(listed(&files, &samples), want);
@@ -519,13 +533,10 @@ mod tests {
                 Box::<crate::project_files::native::NativeFiles>::default(),
             )
         };
-        assert_eq!(
-            listed(&files, &user),
-            [
-                folder(&user, RECORDINGS_FOLDER),
-                folder(&user, SAMPLES_FOLDER)
-            ]
-        );
+        // Every one of the user's own folders is listed at the root, not only the two that hold samples.
+        let mut root: Vec<_> = MY_FOLDERS.iter().map(|name| folder(&user, name)).collect();
+        root.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(listed(&files, &user), root);
         assert_eq!(
             listed(&files, &samples),
             [folder(&samples, "Kicks"), file(&pad)]
