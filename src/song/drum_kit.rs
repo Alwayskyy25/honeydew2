@@ -7,9 +7,11 @@ use crate::params::DRUM_SLOT_PARAMS;
 /// The pads of a Drums channel (`RSMP`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DrumKit {
-    /// Slot `i` has pad index `i` (`MAIN`@4, the key drum events use; pad indexes run 0, 1, 2 … in every file).
-    /// Which hex pad shows it is the `PADS` map's (`file.pads`, pad → slot), which rearranging the pads permutes;
-    /// a pad whose entry is past the last slot is unused.
+    /// The slots in the order the kit lists them: a file's own order, which need not be pad order. Each slot
+    /// keeps the pad index it sits on in its file state ([`SlotFileState::pad_index`], `MAIN`@4, the key a
+    /// file's drum hits use); the model's rows, drum events and playback key slots by their position here.
+    /// Which hex pad shows a slot is the `PADS` map's (`file.pads`, pad → slot), which rearranging the pads
+    /// permutes; a pad whose entry is past the last slot is unused.
     pub slots: Vec<SamplerSlot>,
     /// `RSMP` `lastSlotId`, `PADS` and unknown chunks.
     pub file: KitFileState,
@@ -47,12 +49,20 @@ impl DrumKit {
         kit
     }
 
-    /// Inserts `slot` at pad `index` (clamped to the end), with a new id (`lastSlotId + 1`), and returns the
-    /// id. The later slots move up a pad. Ids are never reused, so a copy of a slot gets its own.
+    /// Inserts `slot` at row `index` (clamped to the end), with a new id (`lastSlotId + 1`), and returns the
+    /// id. The slot takes pad index `index`; the slots on that pad and above move up a pad, so pad indexes
+    /// stay one per slot. Ids are never reused, so a copy of a slot gets its own.
     pub fn insert_slot(&mut self, index: usize, mut slot: SamplerSlot) -> u32 {
+        let index = index.min(self.slots.len());
         self.file.last_slot_id += 1;
         slot.file.id = self.file.last_slot_id;
-        self.slots.insert(index.min(self.slots.len()), slot);
+        for other in &mut self.slots {
+            if other.file.pad_index >= index as f64 {
+                other.file.pad_index += 1.0;
+            }
+        }
+        slot.file.pad_index = index as f64;
+        self.slots.insert(index, slot);
         self.file.last_slot_id
     }
 
@@ -61,20 +71,34 @@ impl DrumKit {
         self.slots.iter().find(|s| s.file.id == id)
     }
 
-    /// The slot with pad index `pad` (`MAIN`@4, its place in the kit), `None` past the last slot. Drum events and the
+    /// The slot at row `pad` (its position in the kit), `None` past the last slot. Drum events and the
     /// step rows use it as it is; a hex pad on screen reaches its slot through the `PADS` map first
     /// (`ui::drums::pad_slot`).
     pub fn slot_on_pad(&self, pad: usize) -> Option<&SamplerSlot> {
         self.slots.get(pad)
     }
 
-    /// The key the slot with pad index `pad` plays: its effective note, the
-    /// slot's stored MIDI note or else 48 + its pad index (`MAIN`@4, here `pad`). `None` past the last slot, or for a
-    /// default past MIDI key 127. A hex pad plays the note of its `PADS` entry's slot (`ui::drums::pad_slot`).
+    /// The slot whose pad index (`MAIN`@4) is `pad`, the first when two slots share one; `None` when no slot
+    /// sits on that pad.
+    pub fn slot_with_pad_index(&self, pad: f64) -> Option<&SamplerSlot> {
+        self.slots.iter().find(|slot| slot.file.pad_index == pad)
+    }
+
+    /// The key the slot at row `pad` plays: its effective note, the slot's stored MIDI note or else 48 + the
+    /// pad index it sits on (`MAIN`@4, kept in its file state), or 48 + its row when it sits on no pad.
+    /// `None` past the last slot, or for a default past MIDI key 127. A hex pad plays the note of its `PADS`
+    /// entry's slot (`ui::drums::pad_slot`).
     pub fn pad_note(&self, pad: usize) -> Option<u8> {
         let slot = self.slot_on_pad(pad)?;
-        slot.midi_note()
-            .or_else(|| u8::try_from(48 + pad).ok().filter(|&n| n < 128))
+        slot.midi_note().or_else(|| {
+            let index = slot.file.pad_index;
+            let base = if index >= 0.0 && index.fract() == 0.0 {
+                index as usize
+            } else {
+                pad
+            };
+            u8::try_from(48 + base).ok().filter(|&n| n < 128)
+        })
     }
 }
 
