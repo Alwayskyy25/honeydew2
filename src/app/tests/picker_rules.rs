@@ -464,7 +464,7 @@ fn new_clip_on_an_empty_audio_track_cell_opens_a_picker_whose_browse_is_one_clip
     };
     assert_eq!((channel, lane), (1, 0));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     // The first pick makes the clip: one undo step; the strip plays it.
     picker_row(&mut rig, 0);
     let clips = |rig: &Rig| rig.app.song.channels[1].lanes[0].clips.clone();
@@ -514,7 +514,7 @@ fn a_pad_sample_pick_stays_open_plays_on_the_preview_and_reloads_the_same_new_pa
         pad: None,
     }));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     picker_row(&mut rig, 0);
     let open = Overlay::SamplePicker {
         channel: 1,
@@ -551,7 +551,7 @@ fn pad_picker() -> Rig {
         pad: Some(0),
     }));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     rig.take();
     rig
 }
@@ -625,7 +625,7 @@ fn a_pad_picks_str1_streams_its_first_8192_frames_with_the_pick_and_the_rest_on_
         pad: Some(0),
     }));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     let renders = rig.app.audio.samples.renders();
     rig.take();
     click_row(&mut rig, 1);
@@ -722,7 +722,7 @@ fn on_the_desktop_the_worker_reads_the_picked_file() {
         pad: Some(0),
     }));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     let hold = crate::ui::views::preset_picker::WORKER_HOLD
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1137,7 +1137,7 @@ fn add_drums_new_pad_and_an_empty_cell_browses_later_pick_are_changes() {
         pad: None,
     }));
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     picker_row(&mut rig, 0);
     assert!(rig.app.files.modified(), "Add Drum's pad");
     close_picker(&mut rig);
@@ -1153,7 +1153,7 @@ fn add_drums_new_pad_and_an_empty_cell_browses_later_pick_are_changes() {
     rig.click(new_clip.expect("the insert menu").rect.center());
     rig.frame(vec![]);
     picker_row(&mut rig, 0);
-    picker_row(&mut rig, 1);
+    picker_row(&mut rig, 7);
     picker_row(&mut rig, 0);
     assert_eq!(rig.app.song.channels[1].lanes[0].clips.len(), 1);
     rig.app.files.saved();
