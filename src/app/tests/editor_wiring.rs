@@ -3155,13 +3155,14 @@ mod samples {
         rig.click_id(egui::Id::new(view).with("add"));
     }
 
-    /// In the open sample picker: `My Files`, then its folder `folder` (0 `My Recordings`, 1 `My Samples`), then that
-    /// folder's first file; then it closes the picker, which stays open after a pick.
+    /// In the open sample picker: `My Files`, then its folder `folder` (0 `My Recordings`, 1 `My Samples` — rows 6
+    /// and 7 of the whole user library the picker now lists), then that folder's first file; then it closes the
+    /// picker, which stays open after a pick.
     fn pick(rig: &mut Rig, folder: usize) {
         // From the root, wherever the picker was left (issue #131).
         super::rack_wiring::picker_root(rig);
         picker_row(rig, 0);
-        picker_row(rig, folder);
+        picker_row(rig, [6, 7][folder]);
         picker_row(rig, 0);
         rig.frame(vec![]);
         super::rack_wiring::close_picker(rig);
@@ -3228,7 +3229,7 @@ mod samples {
             assert!(
                 rig.color_of("My Samples").is_some() && rig.color_of("My Recordings").is_some()
             );
-            picker_row(&mut rig, 1);
+            picker_row(&mut rig, 7);
             rig.frame(vec![]);
             assert!(rig.color_of("Kick 01").is_some(), "listed by name");
             picker_row(&mut rig, 0);
@@ -3295,7 +3296,7 @@ mod samples {
             };
             assert_eq!(current, 2, "grid {grid}");
             picker_row(&mut rig, 0);
-            picker_row(&mut rig, 1);
+            picker_row(&mut rig, 7);
             picker_row(&mut rig, 0);
             rig.frame(vec![]);
             assert_eq!(rig.overlays(), [open], "it stays open");
@@ -3615,7 +3616,7 @@ mod samples {
                 pad: Some(0)
             }]
         );
-        picker_row(&mut rig, 1);
+        picker_row(&mut rig, 7);
         picker_row(&mut rig, 0);
         rig.frame(vec![]);
         let path = |c: usize| {
@@ -3640,7 +3641,7 @@ mod samples {
         rig.app.files.keep_user_file(kept, b"RIFF kept".to_vec());
         row_item(&mut rig, STEPS, 1, (0, 0));
         picker_row(&mut rig, 0);
-        picker_row(&mut rig, 1);
+        picker_row(&mut rig, 7);
         rig.frame(vec![]);
         assert!(rig.color_of("Kick 01").is_some() && rig.color_of("Kick 01 (1)").is_none());
         rig.click_id(egui::Id::new("preset_picker").with("import"));
