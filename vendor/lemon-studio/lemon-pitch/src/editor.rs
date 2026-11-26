@@ -7,13 +7,13 @@
 //! parameter menus, following the other Lemon instruments' editor pattern. Edits show and sound at once.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 
 use nih_plug::prelude::*;
+use os_plugkit::MenuDef;
 use os_plugkit::live::LiveEdits;
 use os_plugkit::vals::Vals;
-use os_plugkit::MenuDef;
 use os_ui::kit::menu::{MenuItem, MenuStyle};
 
 use crate::dsp::Shared;
@@ -52,17 +52,35 @@ impl PitchEditor {
 }
 
 impl Editor for PitchEditor {
-    fn spawn(&self, parent: ParentWindowHandle, context: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
+    fn spawn(
+        &self,
+        parent: ParentWindowHandle,
+        context: Arc<dyn GuiContext>,
+    ) -> Box<dyn Any + Send> {
         let scale = f32::from_bits(self.scale.load(Ordering::Relaxed));
         match parent {
             #[cfg(any(target_os = "linux", all(feature = "embed", not(target_os = "macos"))))]
-            ParentWindowHandle::X11Window(window) => {
-                Box::new(gui::open(window, scale, self.params.clone(), self.shared.clone(), self.live.clone(), context, &self.slot))
-            }
+            ParentWindowHandle::X11Window(window) => Box::new(gui::open(
+                window,
+                scale,
+                self.params.clone(),
+                self.shared.clone(),
+                self.live.clone(),
+                context,
+                &self.slot,
+            )),
             #[cfg(target_os = "macos")]
             ParentWindowHandle::AppKitNsView(view) => {
                 let scale = os_plugkit::gui::backing_scale(view as usize);
-                Box::new(gui::open(view as usize, scale, self.params.clone(), self.shared.clone(), self.live.clone(), context, &self.slot))
+                Box::new(gui::open(
+                    view as usize,
+                    scale,
+                    self.params.clone(),
+                    self.shared.clone(),
+                    self.live.clone(),
+                    context,
+                    &self.slot,
+                ))
             }
             _ => {
                 let _ = (context, scale);
@@ -122,6 +140,8 @@ pub enum Act {
     Automate(usize),
     /// Open the file dialog for the sample to correct.
     OpenDialog,
+    /// Render and export the corrected audio to the sample library.
+    Export,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -140,9 +160,23 @@ pub enum Btn {
 
 #[derive(Clone, Debug)]
 enum Drag {
-    Knob { id: String, v: f32 },
+    Knob {
+        id: String,
+        v: f32,
+    },
     /// A segment block: the pointer's start y and the target it started from.
-    Block { seg: usize, y0: f32, start: f32 },
+    Block {
+        seg: usize,
+        y0: f32,
+        start: f32,
+    },
+    /// Panning the grid: the pointer start, the window's start frame and top note at grab time.
+    Pan {
+        x0: f32,
+        y0: f32,
+        start0: f32,
+        hi0: f32,
+    },
 }
 
 pub struct Logic {
@@ -158,9 +192,24 @@ pub struct Logic {
 }
 
 impl Logic {
-    pub fn new(params: Arc<PitchParams>, shared: Arc<Shared>, live: Arc<LiveEdits>, ctx: Option<Arc<dyn GuiContext>>) -> Self {
+    pub fn new(
+        params: Arc<PitchParams>,
+        shared: Arc<Shared>,
+        live: Arc<LiveEdits>,
+        ctx: Option<Arc<dyn GuiContext>>,
+    ) -> Self {
         let vals = Vals::new(&*params, live, ctx);
-        let mut l = Logic { vals, params, shared, view: ViewState::default(), hits: Vec::new(), drag: None, hint: String::new(), copied: None, hosted: false };
+        let mut l = Logic {
+            vals,
+            params,
+            shared,
+            view: ViewState::default(),
+            hits: Vec::new(),
+            drag: None,
+            hint: String::new(),
+            copied: None,
+            hosted: false,
+        };
         l.sync_data();
         l
     }
@@ -175,7 +224,7 @@ impl Logic {
                 path: self.shared.loaded_path(),
                 version: v,
             };
-            // Frame the detected notes on the grid.
+            // Frame the detected notes on the grid, at full horizontal zoom.
             if let Some(a) = &self.view.data.analysis {
                 let mut lo = f32::MAX;
                 let mut hi = f32::MIN;
@@ -186,6 +235,8 @@ impl Logic {
                 if hi >= lo {
                     self.view.note_hi = (hi + 8.0).clamp(45.0, 110.0);
                 }
+                self.view.zoom_x = 1.0;
+                self.view.scroll = 0.0;
             }
         }
     }
@@ -205,12 +256,25 @@ impl Logic {
         self.sync_data();
     }
 
+    /// Renders the corrected audio and exports it to the sample library (the drag-out equivalent);
+    /// the hint reports where it went.
+    pub fn export(&mut self) {
+        self.hint = match crate::dsp::export_corrected(&self.shared, &self.params) {
+            Ok(name) => format!("Exported {name} — find it in the sample library"),
+            Err(e) => format!("Export failed: {e}"),
+        };
+    }
+
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }
 
     fn hit(&self, x: f32, y: f32) -> Option<Target> {
-        self.hits.iter().rev().find(|h| h.r.contains(x, y)).map(|h| h.t.clone())
+        self.hits
+            .iter()
+            .rev()
+            .find(|h| h.r.contains(x, y))
+            .map(|h| h.t.clone())
     }
 
     fn hint_for(&self, t: Option<&Target>) -> String {
@@ -225,24 +289,109 @@ impl Logic {
         self.vals.edit(id, d);
     }
 
+    fn total(&self) -> usize {
+        self.view.data.sample.as_ref().map_or(0, |s| s.frames())
+    }
+
+    /// Horizontal zoom by `factor`, keeping the frame under `at_x` (or the window centre) in place.
+    pub fn zoom_h(&mut self, factor: f32, at_x: Option<f32>) {
+        let total = self.total();
+        if total == 0 {
+            return;
+        }
+        let g = view::grid_rect();
+        let x = at_x.unwrap_or(g.cx());
+        let f0 = view::frame_at_x(&self.view, x, total);
+        self.view.zoom_x = (self.view.zoom_x * factor).clamp(1.0, view::MAX_ZOOM_X);
+        let (_, win) = self.view.window(total);
+        let start = f0 - (x - g.x) / g.w * win;
+        let range = (total as f32 - win).max(1.0);
+        self.view.scroll = (start / range).clamp(0.0, 1.0);
+    }
+
+    /// Vertical zoom by `factor` (more = fewer, larger notes), keeping the note under `at_y` in place.
+    pub fn zoom_v(&mut self, factor: f32, at_y: Option<f32>) {
+        let g = view::grid_rect();
+        let y = at_y.unwrap_or(g.cy());
+        let n0 = view::note_at_y(self.view.note_hi, self.view.visible, y);
+        self.view.visible =
+            (self.view.visible / factor).clamp(view::MIN_VISIBLE, view::MAX_VISIBLE);
+        let rh = view::row_h(self.view.visible);
+        self.view.note_hi = (n0 + (y - g.y) / rh).clamp(20.0, 127.0);
+    }
+
+    /// Zoom full: the whole sample and the default pitch range.
+    pub fn zoom_full(&mut self) {
+        self.view.zoom_x = 1.0;
+        self.view.scroll = 0.0;
+        self.view.visible = 30.0;
+    }
+
     pub fn down(&mut self, x: f32, y: f32, btn: Btn, m: Mods, _dbl: bool) -> Vec<Act> {
         self.view.mouse = Some((x, y));
-        let Some(t) = self.hit(x, y) else { return vec![] };
+        let Some(t) = self.hit(x, y) else {
+            return vec![];
+        };
         let mut acts = vec![Act::Repaint];
         match (&t, btn) {
             (Target::Knob(id), Btn::Left) if m.alt => self.reset(id),
             (Target::Knob(id), Btn::Middle) => self.reset(id),
             (Target::Knob(id), Btn::Left) => {
                 self.vals.begin(id);
-                self.drag = Some(Drag::Knob { id: id.clone(), v: self.vals.norm(id) });
+                self.drag = Some(Drag::Knob {
+                    id: id.clone(),
+                    v: self.vals.norm(id),
+                });
                 self.view.pressed = Some(t.clone());
                 acts.push(Act::Lock);
             }
-            (Target::Knob(id), Btn::Right) => acts.push(Act::Menu(MenuReq::Param(id.clone()), x, y)),
+            (Target::Knob(id), Btn::Right) => {
+                acts.push(Act::Menu(MenuReq::Param(id.clone()), x, y))
+            }
+            (Target::Toggle(id), Btn::Left) => {
+                let on = self.vals.plain(id) > 0.5;
+                self.vals.edit_plain(id, if on { 0.0 } else { 1.0 });
+            }
+            (Target::Set(id, v), Btn::Left) => {
+                self.vals.edit_plain(id, *v);
+            }
+            (Target::ZoomH(f), Btn::Left) => self.zoom_h(*f, None),
+            (Target::ZoomV(f), Btn::Left) => self.zoom_v(*f, None),
+            (Target::ZoomFull, Btn::Left) => self.zoom_full(),
             (Target::LoadSample, Btn::Left) => acts.push(Act::OpenDialog),
+            (Target::Export, Btn::Left) => acts.push(Act::Export),
+            (Target::Grid, Btn::Middle) => {
+                let (start0, _) = self.view.window(self.total());
+                self.drag = Some(Drag::Pan {
+                    x0: x,
+                    y0: y,
+                    start0,
+                    hi0: self.view.note_hi,
+                });
+                self.view.pressed = Some(t.clone());
+            }
+            (Target::Grid, Btn::Left) if m.ctrl && m.alt => {
+                let (start0, _) = self.view.window(self.total());
+                self.drag = Some(Drag::Pan {
+                    x0: x,
+                    y0: y,
+                    start0,
+                    hi0: self.view.note_hi,
+                });
+                self.view.pressed = Some(t.clone());
+            }
             (Target::Block(seg), Btn::Left) => {
-                let start = self.view.data.analysis.as_ref().map_or(0.0, |a| a.segments.get(*seg).map_or(0.0, |s| s.target));
-                self.drag = Some(Drag::Block { seg: *seg, y0: y, start });
+                let start = self
+                    .view
+                    .data
+                    .analysis
+                    .as_ref()
+                    .map_or(0.0, |a| a.segments.get(*seg).map_or(0.0, |s| s.target));
+                self.drag = Some(Drag::Block {
+                    seg: *seg,
+                    y0: y,
+                    start,
+                });
                 self.view.pressed = Some(t.clone());
             }
             _ => {}
@@ -253,7 +402,9 @@ impl Logic {
 
     /// Mouse movement during a locked drag (logical px since the last event).
     pub fn delta(&mut self, _dx: f32, dy: f32, m: Mods) -> Vec<Act> {
-        let Some(Drag::Knob { id, v }) = self.drag.clone() else { return vec![] };
+        let Some(Drag::Knob { id, v }) = self.drag.clone() else {
+            return vec![];
+        };
         let f = if m.ctrl { FINE } else { 1.0 };
         let v = (v - dy * f / KNOB_PX).clamp(0.0, 1.0);
         self.vals.set(&id, v);
@@ -272,13 +423,45 @@ impl Logic {
         self.view.mouse = Some((x, y));
         match self.drag.clone() {
             Some(Drag::Block { seg, y0, start }) => {
-                let note = (start + (y0 - y) / view::row_h()).round().clamp(12.0, 120.0);
-                let cur = self.view.data.analysis.as_ref().and_then(|a| a.segments.get(seg)).map(|s| s.target);
+                let mut note = (start + (y0 - y) / view::row_h(self.view.visible))
+                    .round()
+                    .clamp(12.0, 120.0);
+                // Snap-to-scale: the block only lands on notes of the chosen scale.
+                if self.vals.plain("snap") > 0.5 {
+                    let scale = self.vals.plain("scale").round() as i32;
+                    let root = self.vals.plain("root").round() as i32;
+                    note = crate::dsp::snap_note(note, scale, root);
+                }
+                let cur = self
+                    .view
+                    .data
+                    .analysis
+                    .as_ref()
+                    .and_then(|a| a.segments.get(seg))
+                    .map(|s| s.target);
                 if cur != Some(note) {
                     self.shared.set_target(seg, note);
                     self.sync_data();
                 }
                 self.hint = self.hint_for(self.view.pressed.as_ref());
+                vec![Act::Repaint]
+            }
+            Some(Drag::Pan {
+                x0,
+                y0,
+                start0,
+                hi0,
+            }) => {
+                let total = self.total();
+                if total > 0 {
+                    let g = view::grid_rect();
+                    let (_, win) = self.view.window(total);
+                    let start = start0 - (x - x0) / g.w * win;
+                    let range = (total as f32 - win).max(1.0);
+                    self.view.scroll = (start / range).clamp(0.0, 1.0);
+                }
+                self.view.note_hi =
+                    (hi0 + (y - y0) / view::row_h(self.view.visible)).clamp(20.0, 127.0);
                 vec![Act::Repaint]
             }
             Some(Drag::Knob { .. }) => vec![Act::Repaint],
@@ -296,16 +479,28 @@ impl Logic {
         vec![Act::Repaint]
     }
 
-    /// Wheel: knobs step by 1/32 of their range; the grid scrolls its note window.
-    pub fn wheel(&mut self, x: f32, y: f32, notches: f32, _m: Mods) -> Vec<Act> {
-        let Some(t) = self.hit(x, y) else { return vec![] };
+    /// Wheel, following Newtone's editor: plain = scroll vertically, Shift = scroll horizontally,
+    /// Ctrl = zoom horizontally (time), Alt = zoom vertically (pitch). Knobs step by 1/32 of range.
+    pub fn wheel(&mut self, x: f32, y: f32, notches: f32, m: Mods) -> Vec<Act> {
+        let Some(t) = self.hit(x, y) else {
+            return vec![];
+        };
         match &t {
             Target::Knob(id) => {
                 let v = (self.vals.norm(id) + notches.signum() / 32.0).clamp(0.0, 1.0);
                 self.vals.edit(id, v);
             }
             Target::Grid | Target::Block(_) => {
-                self.view.note_hi = (self.view.note_hi + notches.signum() * 3.0).clamp(40.0, 120.0);
+                let s = notches.signum();
+                if m.ctrl {
+                    self.zoom_h(if s > 0.0 { 1.3 } else { 1.0 / 1.3 }, Some(x));
+                } else if m.alt {
+                    self.zoom_v(if s > 0.0 { 1.3 } else { 1.0 / 1.3 }, Some(y));
+                } else if m.shift {
+                    self.view.scroll = (self.view.scroll - s * 0.12).clamp(0.0, 1.0);
+                } else {
+                    self.view.note_hi = (self.view.note_hi + s * 3.0).clamp(20.0, 127.0);
+                }
             }
             _ => return vec![],
         }
@@ -321,10 +516,17 @@ impl Logic {
                 m.add(MenuItem::item("Reset"), Cmd::Reset(id.clone()));
                 m.sep(Cmd::None);
                 m.add(MenuItem::item("Copy value"), Cmd::CopyValue(id.clone()));
-                m.add(MenuItem::item("Paste value").enabled(self.copied.is_some()), Cmd::PasteValue(id.clone()));
+                m.add(
+                    MenuItem::item("Paste value").enabled(self.copied.is_some()),
+                    Cmd::PasteValue(id.clone()),
+                );
                 m.add(MenuItem::item("Enter value..."), Cmd::TypeIn(id.clone()));
                 m.sep(Cmd::None);
-                m.add(MenuItem::item("Create automation clip").enabled(self.hosted || cfg!(feature = "embed")), Cmd::Automate(id.clone()));
+                m.add(
+                    MenuItem::item("Create automation clip")
+                        .enabled(self.hosted || cfg!(feature = "embed")),
+                    Cmd::Automate(id.clone()),
+                );
                 m
             }
         }
@@ -341,14 +543,23 @@ impl Logic {
                 }
             }
             Cmd::TypeIn(id) => return vec![Act::TypeIn(id, x, y)],
-            Cmd::Automate(id) => return self.param_index(&id).map(Act::Automate).into_iter().collect(),
+            Cmd::Automate(id) => {
+                return self
+                    .param_index(&id)
+                    .map(Act::Automate)
+                    .into_iter()
+                    .collect();
+            }
         }
         vec![Act::Repaint]
     }
 
     /// Position of `id` in the parameter list (the host's automation index).
     pub fn param_index(&self, id: &str) -> Option<usize> {
-        self.params.param_map().iter().position(|(pid, _, _)| pid == id)
+        self.params
+            .param_map()
+            .iter()
+            .position(|(pid, _, _)| pid == id)
     }
 
     /// The value text a type-in box starts with.
@@ -407,36 +618,56 @@ mod gui {
         last_page: usize,
     }
 
-    pub fn open(parent: px::Parent, scale: f32, params: Arc<PitchParams>, shared: Arc<Shared>, live: Arc<LiveEdits>, ctx: Arc<dyn GuiContext>, slot: &px::Slot) -> Option<px::EditorThread> {
+    pub fn open(
+        parent: px::Parent,
+        scale: f32,
+        params: Arc<PitchParams>,
+        shared: Arc<Shared>,
+        live: Arc<LiveEdits>,
+        ctx: Arc<dyn GuiContext>,
+        slot: &px::Slot,
+    ) -> Option<px::EditorThread> {
         let scale = if scale > 0.0 { scale } else { 1.0 };
         let px = move |v: u32| (v as f32 * scale).round() as u32;
         let wake = slot.clone();
         let pages = vec![PageIcon::Plugin];
-        let link = Peer::register(parent as u64, pages, (view::EDITOR_W, view::HOSTED_EDITOR_H), move || px::notify(&wake));
+        let link = Peer::register(
+            parent as u64,
+            pages,
+            (view::EDITOR_W, view::HOSTED_EDITOR_H),
+            move || px::notify(&wake),
+        );
         let peer = link.clone();
-        let thread = px::spawn(parent, (px(view::EDITOR_W), px(view::EDITOR_H)), slot, move |win| {
-            let full = (px(view::W), px(view::H));
-            let Ok(canvas) = Canvas::new(full.0, full.1, scale) else { return };
-            let logic = Logic::new(params.clone(), shared, live, Some(ctx));
-            let ed = Ed {
-                win,
-                canvas,
-                buf: Vec::new(),
-                crop: Vec::new(),
-                scale,
-                size: full,
-                params,
-                logic,
-                palette: os_plugkit::palette(),
-                last_sig: 0,
-                last_view: ViewState::default(),
-                last_hint: String::new(),
-                dirty: true,
-                link: peer,
-                last_page: 0,
-            };
-            ed.run();
-        });
+        let thread = px::spawn(
+            parent,
+            (px(view::EDITOR_W), px(view::EDITOR_H)),
+            slot,
+            move |win| {
+                let full = (px(view::W), px(view::H));
+                let Ok(canvas) = Canvas::new(full.0, full.1, scale) else {
+                    return;
+                };
+                let logic = Logic::new(params.clone(), shared, live, Some(ctx));
+                let ed = Ed {
+                    win,
+                    canvas,
+                    buf: Vec::new(),
+                    crop: Vec::new(),
+                    scale,
+                    size: full,
+                    params,
+                    logic,
+                    palette: os_plugkit::palette(),
+                    last_sig: 0,
+                    last_view: ViewState::default(),
+                    last_hint: String::new(),
+                    dirty: true,
+                    link: peer,
+                    last_page: 0,
+                };
+                ed.run();
+            },
+        );
         if thread.is_none() {
             link.unregister();
         }
@@ -465,7 +696,9 @@ mod gui {
                     Input::Tick => self.poll(),
                     Input::Down { x, y, btn: b, dbl } => {
                         let (x, y) = self.to_view(x, y);
-                        let acts = self.logic.down(x, y, btn(b), self.mods(), dbl && b == Button::Left);
+                        let acts =
+                            self.logic
+                                .down(x, y, btn(b), self.mods(), dbl && b == Button::Left);
                         self.act(acts);
                     }
                     Input::Move { x, y } => {
@@ -474,7 +707,9 @@ mod gui {
                         self.act(acts);
                     }
                     Input::Delta { dx, dy } => {
-                        let acts = self.logic.delta(dx / self.scale, dy / self.scale, self.mods());
+                        let acts = self
+                            .logic
+                            .delta(dx / self.scale, dy / self.scale, self.mods());
                         self.act(acts);
                     }
                     Input::Up { .. } => {
@@ -508,15 +743,29 @@ mod gui {
         }
 
         fn crop_y(&self) -> u32 {
-            if self.logic.hosted { view::HOSTED_CROP_Y } else { view::CROP_Y }
+            if self.logic.hosted {
+                view::HOSTED_CROP_Y
+            } else {
+                view::CROP_Y
+            }
         }
 
         fn content(&self) -> (u32, u32) {
-            (view::EDITOR_W, if self.logic.hosted { view::HOSTED_EDITOR_H } else { view::EDITOR_H })
+            (
+                view::EDITOR_W,
+                if self.logic.hosted {
+                    view::HOSTED_EDITOR_H
+                } else {
+                    view::EDITOR_H
+                },
+            )
         }
 
         fn to_view(&self, x: f32, y: f32) -> (f32, f32) {
-            (x / self.scale + view::CROP_X as f32, y / self.scale + self.crop_y() as f32)
+            (
+                x / self.scale + view::CROP_X as f32,
+                y / self.scale + self.crop_y() as f32,
+            )
         }
 
         fn screen(&self, x: f32, y: f32) -> (i32, i32) {
@@ -529,7 +778,11 @@ mod gui {
             let dirty = self.logic.vals.expire();
             self.logic.sync_data();
             let sig = self.logic.vals.signature();
-            if dirty || sig != self.last_sig || self.logic.view != self.last_view || self.logic.hint != self.last_hint {
+            if dirty
+                || sig != self.last_sig
+                || self.logic.view != self.last_view
+                || self.logic.hint != self.last_hint
+            {
                 self.dirty = true;
             }
             if self.logic.hint != self.last_hint {
@@ -586,17 +839,35 @@ mod gui {
                         }
                         self.dirty = true;
                     }
+                    Act::Export => {
+                        self.logic.export();
+                        self.dirty = true;
+                    }
                 }
             }
         }
 
         fn paint(&mut self) {
             self.dirty = false;
-            let hint = if self.logic.hosted { String::new() } else { self.logic.hint.clone() };
-            self.logic.hits = view::paint(&mut self.canvas, &self.palette, &self.logic.vals, &self.logic.view, &hint, self.logic.hosted);
+            let hint = if self.logic.hosted {
+                String::new()
+            } else {
+                self.logic.hint.clone()
+            };
+            self.logic.hits = view::paint(
+                &mut self.canvas,
+                &self.palette,
+                &self.logic.vals,
+                &self.logic.view,
+                &hint,
+                self.logic.hosted,
+            );
             self.last_sig = self.logic.vals.signature();
             self.last_view = self.logic.view.clone();
-            let (ox, oy) = ((view::CROP_X as f32 * self.scale).round() as u32, (self.crop_y() as f32 * self.scale).round() as u32);
+            let (ox, oy) = (
+                (view::CROP_X as f32 * self.scale).round() as u32,
+                (self.crop_y() as f32 * self.scale).round() as u32,
+            );
             let (cw, ch) = self.content();
             let w = ((cw as f32 * self.scale).round() as u32).min(self.size.0 - ox);
             let h = ((ch as f32 * self.scale).round() as u32).min(self.size.1 - oy);
@@ -620,7 +891,10 @@ mod gui {
         let path = win.dialog(move || {
             rfd::FileDialog::new()
                 .set_title("Sample to correct")
-                .add_filter("Audio files", &["wav", "flac", "ogg", "wv", "aif", "aiff", "mp3", "m4a"])
+                .add_filter(
+                    "Audio files",
+                    &["wav", "flac", "ogg", "wv", "aif", "aiff", "mp3", "m4a"],
+                )
                 .pick_file()
         });
         path.flatten().map(|p| p.to_string_lossy().into_owned())
@@ -633,7 +907,12 @@ mod tests {
     use crate::view;
 
     fn logic() -> Logic {
-        Logic::new(Arc::new(PitchParams::default()), Arc::new(Shared::new()), Arc::new(LiveEdits::default()), None)
+        Logic::new(
+            Arc::new(PitchParams::default()),
+            Arc::new(Shared::new()),
+            Arc::new(LiveEdits::default()),
+            None,
+        )
     }
 
     fn paint(l: &mut Logic) {
@@ -648,5 +927,32 @@ mod tests {
         paint(&mut l);
         let acts = l.down(60.0, 88.0, Btn::Left, Mods::default(), false);
         assert!(acts.contains(&Act::OpenDialog), "got {acts:?}");
+    }
+
+    #[test]
+    fn zoom_controls_change_the_grid_window() {
+        let mut l = logic();
+        paint(&mut l);
+        // V+ button: fewer notes on screen (vertical zoom in).
+        l.down(479.0, 88.0, Btn::Left, Mods::default(), false);
+        assert!(l.view.visible < 30.0, "visible {}", l.view.visible);
+        // Alt+wheel over the grid zooms pitch the other way.
+        let g = view::grid_rect();
+        l.wheel(
+            g.cx(),
+            g.cy(),
+            -1.0,
+            Mods {
+                ctrl: false,
+                shift: false,
+                alt: true,
+            },
+        );
+        assert!(l.view.visible > 15.0, "visible {}", l.view.visible);
+        // FULL resets both zooms.
+        l.down(526.0, 88.0, Btn::Left, Mods::default(), false);
+        assert_eq!(l.view.visible, 30.0);
+        assert_eq!(l.view.zoom_x, 1.0);
+        assert_eq!(l.view.scroll, 0.0);
     }
 }
