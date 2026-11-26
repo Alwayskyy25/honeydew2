@@ -2,7 +2,8 @@
 //! and the audio clip editor's sample row icon button.
 //!
 //! - The side browser panel of [`PresetPicker`], titled [`TITLE`]. Its root lists `My Files`, the user folder, which
-//!   holds `My Samples` and `My Recordings`; each lists its folders, then its audio files by name
+//!   holds every one of the user's own folders (`My Samples`, `My Recordings`, `My Tracks`, …) and whatever else
+//!   the user put there; each lists its folders, then its audio files by name
 //!   ([`ProjectFiles::sample_library`]). None are shipped; with imported content in the content folder the root then
 //!   lists its `Drum Samples` categories, read-only.
 //! - `Load Sample`: the row's slot takes the file as its sample, its path (`PTH1`, a user-root or, for original
@@ -1224,7 +1225,23 @@ mod tests {
         fake_tree(&tmp.0.join(CONTENT_FOLDER));
         assert_eq!(names(&files, &[]), [MY_FILES, "Kick", "Snare"]);
         assert_eq!(names(&files, &["Kick"]), ["Gen Kick"]);
-        assert_eq!(names(&files, &[MY_FILES]), ["My Recordings", "My Samples"]);
+        assert_eq!(
+            names(&files, &[MY_FILES]),
+            [
+                "My Chord Sets",
+                "My Drumsets",
+                "My Instruments",
+                "My MIDI",
+                "My Presets",
+                "My Racks",
+                "My Recordings",
+                "My Samples",
+                "My Songs",
+                "My SoundFonts",
+                "My Tracks",
+                "Original Content"
+            ]
+        );
         let mut picked = picker(&files);
         picked.names_in(&*files.sample_library(), &["Snare"]);
         let path = picked.path_of("Gen Snare").unwrap();
