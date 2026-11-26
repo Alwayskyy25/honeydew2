@@ -45,7 +45,11 @@ impl Plugin for LemonPitch {
     const URL: &'static str = "https://github.com/ItsAlphaNeon/Lemon-Studio";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout { main_input_channels: None, main_output_channels: NonZeroU32::new(2), ..AudioIOLayout::const_default() }];
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: None,
+        main_output_channels: NonZeroU32::new(2),
+        ..AudioIOLayout::const_default()
+    }];
     const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
@@ -57,10 +61,18 @@ impl Plugin for LemonPitch {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        Some(Box::new(editor::PitchEditor::new(self.params.clone(), self.shared.clone())))
+        Some(Box::new(editor::PitchEditor::new(
+            self.params.clone(),
+            self.shared.clone(),
+        )))
     }
 
-    fn initialize(&mut self, _audio_io_layout: &AudioIOLayout, buffer_config: &BufferConfig, _context: &mut impl InitContext<Self>) -> bool {
+    fn initialize(
+        &mut self,
+        _audio_io_layout: &AudioIOLayout,
+        buffer_config: &BufferConfig,
+        _context: &mut impl InitContext<Self>,
+    ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
         self.engine.set_sample_rate(buffer_config.sample_rate);
         self.sync_path();
@@ -71,7 +83,12 @@ impl Plugin for LemonPitch {
         self.engine.all_notes_off();
     }
 
-    fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
+    fn process(
+        &mut self,
+        buffer: &mut Buffer,
+        _aux: &mut AuxiliaryBuffers,
+        context: &mut impl ProcessContext<Self>,
+    ) -> ProcessStatus {
         let frames = buffer.samples();
         if frames == 0 {
             return ProcessStatus::Normal;
@@ -79,9 +96,16 @@ impl Plugin for LemonPitch {
         self.sync_path();
         while let Some(ev) = context.next_event() {
             match ev {
-                NoteEvent::NoteOn { note, channel, velocity, .. } => self.engine.note_on(note, channel, velocity),
+                NoteEvent::NoteOn {
+                    note,
+                    channel,
+                    velocity,
+                    ..
+                } => self.engine.note_on(note, channel, velocity),
                 NoteEvent::NoteOff { note, channel, .. } => self.engine.note_off(note, channel),
-                NoteEvent::MidiCC { cc, .. } if cc == 120 || cc == 123 => self.engine.all_notes_off(),
+                NoteEvent::MidiCC { cc, .. } if cc == 120 || cc == 123 => {
+                    self.engine.all_notes_off()
+                }
                 _ => {}
             }
         }
@@ -103,7 +127,12 @@ impl LemonPitch {
     /// Keeps the shared sample in step with the persisted `sample-path` parameter (a restored project, or a
     /// path the editor just chose — the editor also writes the parameter when it loads).
     fn sync_path(&mut self) {
-        let want = self.params.sample_path.read().map(|p| p.clone()).unwrap_or_default();
+        let want = self
+            .params
+            .sample_path
+            .read()
+            .map(|p| p.clone())
+            .unwrap_or_default();
         if want != self.synced_path {
             self.synced_path = want.clone();
             if !want.is_empty() && self.shared.loaded_path() != want {
@@ -115,10 +144,16 @@ impl LemonPitch {
 
 impl ClapPlugin for LemonPitch {
     const CLAP_ID: &'static str = "com.lemon-studio.lemon-pitch";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("Pitch editor instrument: per-segment pitch correction of a loaded vocal or melody sample");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some(
+        "Pitch editor instrument: per-segment pitch correction of a loaded vocal or melody sample",
+    );
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
-    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Instrument, ClapFeature::Sampler, ClapFeature::Stereo];
+    const CLAP_FEATURES: &'static [ClapFeature] = &[
+        ClapFeature::Instrument,
+        ClapFeature::Sampler,
+        ClapFeature::Stereo,
+    ];
 }
 
 os_plugkit::linked_clap_entry!(LemonPitch);
