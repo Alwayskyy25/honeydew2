@@ -54,7 +54,7 @@ const PAGES: [&str; 4] = ["Mixer", "Sample", "Envelope", "Seq"];
 const PAD_VELOCITY: f32 = 1.0;
 
 impl DrumPads for DrumKit {
-    /// Slot `i` is row (pad index) `i`.
+    /// Slot `i` is row `i`.
     fn count(&self) -> usize {
         self.slots.len()
     }
@@ -90,7 +90,16 @@ fn edit_kit(kit: &mut DrumKit, action: &StepAction) {
             }
         }
         StepAction::Delete { pad } if usize::from(*pad) < kit.slots.len() => {
-            kit.slots.remove(usize::from(*pad));
+            let removed = kit.slots.remove(usize::from(*pad));
+            // The slots on the pads above the removed slot's move down a pad, as they did when a pad
+            // index was a slot's position.
+            if removed.file.pad_index >= 0.0 {
+                for slot in &mut kit.slots {
+                    if slot.file.pad_index > removed.file.pad_index {
+                        slot.file.pad_index -= 1.0;
+                    }
+                }
+            }
             pads_deleted(&mut kit.file.pads, *pad);
         }
         // `Set Name`: the custom pad name, MAIN@1051 ("" removes it); MAIN@12 stays.
