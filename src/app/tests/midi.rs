@@ -987,7 +987,7 @@ fn play_start_stops_the_open_pickers_sample_strip() {
         channel: 1,
         pad: None,
     }));
-    for row in [0, 1, 0] {
+    for row in [0, 7, 0] {
         super::rack_wiring::picker_row(&mut rig, row);
     }
     assert!(
