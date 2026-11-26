@@ -3,17 +3,18 @@
 //
 // Lemon Additive — original implementation (see params.rs note).
 
-//! Lemon Additive editor painting and hit regions (platform independent), in the Lemon design: the two parts
-//! across the top, the drawable harmonic spectrum in the middle, the part's knobs under it and the global
-//! envelope / mix knobs along the bottom.
+//! Lemon Additive editor painting and hit regions (platform independent), laid out like Harmor's panel:
+//! the part row and timbre blend across the top, the drawable harmonic spectrum (the IMG section's analogue)
+//! under it, then the per-part sections — Spectral (prism / blur / harmonizer / pluck), Filter 1, Filter 2
+//! and EQ — and the global envelope / pitch / unison rows along the bottom.
 
-use os_theme::design::lemon as brand;
 use os_theme::Palette;
+use os_theme::design::lemon as brand;
 use os_ui::kit::lemon::{self, plug};
-use os_ui::kit::{self, inst, State};
+use os_ui::kit::{self, State, inst};
 use os_ui::{Canvas, Color, Font, Rect};
 
-use crate::params::{BANDS, PART_MODES, SHAPES};
+use crate::params::{FILTER_TYPES, PARTIALS, SHAPES};
 
 /// Painted size in logical pixels (a window minus its title bar), as the other Lemon instruments.
 pub const W: u32 = 568;
@@ -65,8 +66,12 @@ pub enum Target {
     List(String),
     /// The editor shows part A (0) or part B (1).
     PartTab(u8),
-    /// A spectrum band of the shown part (drag vertically).
-    Band(usize),
+    /// One partial of the shown part's drawable spectrum (drag to paint levels).
+    Spec(usize),
+    /// A spectrum preset button: 0 flat, 1 decay, 2 odd only, 3 clear.
+    SpecPreset(u8),
+    /// Copy the shown part's settings onto the other part.
+    CopyPart,
 }
 
 impl Target {
@@ -95,7 +100,11 @@ pub struct ViewState {
 
 impl Default for ViewState {
     fn default() -> Self {
-        ViewState { part: 0, mouse: None, pressed: None }
+        ViewState {
+            part: 0,
+            mouse: None,
+            pressed: None,
+        }
     }
 }
 
@@ -113,8 +122,14 @@ impl Ui<'_> {
     }
     fn state(&self, r: Rect, t: &Target) -> State {
         let pressed = self.st.pressed.as_ref() == Some(t);
-        let hover = !pressed && self.st.pressed.is_none() && self.st.mouse.is_some_and(|(x, y)| r.contains(x, y));
-        State { hover, pressed, ..State::NORMAL }
+        let hover = !pressed
+            && self.st.pressed.is_none()
+            && self.st.mouse.is_some_and(|(x, y)| r.contains(x, y));
+        State {
+            hover,
+            pressed,
+            ..State::NORMAL
+        }
     }
 }
 
@@ -123,19 +138,47 @@ pub fn prefix(part: u8) -> &'static str {
     if part == 0 { "aa" } else { "ab" }
 }
 
-/// Band parameter id of the shown part.
-pub fn band_id(part: u8, i: usize) -> String {
-    format!("{}_{}", prefix(part), format!("band{}", i + 1))
-}
-
 /// The spectrum well's rectangle.
 pub fn spectrum_rect() -> Rect {
-    Rect::new(16.0, 150.0, 536.0, 150.0)
+    Rect::new(16.0, 134.0, 536.0, 96.0)
 }
 
-/// Paints the editor. `hosted` = the host's strip row carries the page tab and the hint line.
-pub fn paint(c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewState, hint: &str, hosted: bool) -> Vec<Hit> {
-    let mut ui = Ui { c, t, m, st, hits: Vec::new() };
+/// The x centre of partial `k`'s column (0-based) in the spectrum well.
+pub fn spec_x(k: usize) -> f32 {
+    let a = spectrum_rect();
+    a.x + (k as f32 + 0.5) * a.w / PARTIALS as f32
+}
+
+/// The partial index at painted x (clamped).
+pub fn spec_at_x(x: f32) -> usize {
+    let a = spectrum_rect();
+    (((x - a.x) / a.w * PARTIALS as f32) as i32).clamp(0, PARTIALS as i32 - 1) as usize
+}
+
+/// The spectrum level at painted y (0 at the well's bottom, 1 at its top).
+pub fn spec_value_at_y(y: f32) -> f32 {
+    let a = spectrum_rect();
+    ((a.y + a.h - y) / a.h).clamp(0.0, 1.0)
+}
+
+/// Paints the editor. `spec` is the shown part's drawable spectrum. `hosted` = the host's strip row
+/// carries the page tab and the hint line.
+pub fn paint(
+    c: &mut Canvas,
+    t: &Palette,
+    m: &dyn Model,
+    spec: &[f32],
+    st: &ViewState,
+    hint: &str,
+    hosted: bool,
+) -> Vec<Hit> {
+    let mut ui = Ui {
+        c,
+        t,
+        m,
+        st,
+        hits: Vec::new(),
+    };
     ui.c.begin_frame(None);
     ui.c.clear(plug::BG);
     if !hosted {
@@ -145,10 +188,10 @@ pub fn paint(c: &mut Canvas, t: &Palette, m: &dyn Model, st: &ViewState, hint: &
         }
     }
     part_row(&mut ui);
-    shape_row(&mut ui);
-    spectrum(&mut ui);
-    part_knobs(&mut ui);
-    global_row(&mut ui);
+    timbre_row(&mut ui);
+    spectrum(&mut ui, spec);
+    sections(&mut ui);
+    global_rows(&mut ui);
     ui.hits
 }
 
@@ -170,43 +213,130 @@ fn button(ui: &mut Ui, r: Rect, label: &str, active: bool, target: Target, col: 
     };
     ui.c.fill_rrect(r, 5.0, bg);
     let lh = ui.c.line_height(LABEL);
-    ui.c.text_clip(LABEL, r.x + 6.0, r.cy() - lh / 2.0, r.w - 12.0, if active { brand::TEXT } else { plug::DIM }, label);
+    ui.c.text_clip(
+        LABEL,
+        r.x + 6.0,
+        r.cy() - lh / 2.0,
+        r.w - 12.0,
+        if active { brand::TEXT } else { plug::DIM },
+        label,
+    );
     ui.hit(r, target);
 }
 
-/// The part selector row: PART A / PART B tabs, the shown part's on switch.
-fn part_row(ui: &mut Ui) {
-    let y = 78.0;
-    for p in 0..2u8 {
-        let r = rr(16.0 + p as f32 * 110.0, y, 102.0, 26.0);
-        let col = Color::rgb(PART_COLORS[p as usize]);
-        button(ui, r, if p == 0 { "PART A" } else { "PART B" }, ui.st.part == p, Target::PartTab(p), col);
-    }
-    let pre = prefix(ui.st.part);
-    let on_id = format!("{pre}_on");
-    let on = ui.m.plain(&on_id) > 0.5;
-    button(ui, rr(244.0, y, 70.0, 26.0), if on { "ON" } else { "OFF" }, on, Target::Toggle(on_id), Color::rgb(PART_COLORS[ui.st.part as usize]));
-    // Part mode (global): how notes choose their part.
-    let mode = ui.m.plain("partmode").round() as usize;
-    ui.c.text(CAP, 330.0, y + 2.0, plug::DIM, "PART MODE");
-    let labels = ["MIX", "A", "B", "NOTE CH"];
-    for (i, label) in labels.iter().enumerate() {
-        let r = rr(330.0 + i as f32 * 56.0, y + 14.0, 52.0, 18.0);
-        button(ui, r, label, mode == i, Target::Set("partmode".into(), i as f32), brand::MAIN);
-    }
-    let _ = PART_MODES;
+/// A - value + stepper for an int parameter.
+fn stepper(ui: &mut Ui, id: &str, x: f32, y: f32, w: f32, label: &str, min: i32, max: i32) {
+    let cur = ui.m.plain(id).round() as i32;
+    button(
+        ui,
+        rr(x, y, 20.0, 20.0),
+        "-",
+        false,
+        Target::Set(id.into(), (cur - 1).max(min) as f32),
+        brand::MAIN,
+    );
+    ui.c.text_center(
+        LABEL,
+        rr(x + 22.0, y + 2.0, w - 44.0, 16.0),
+        brand::TEXT,
+        label,
+    );
+    button(
+        ui,
+        rr(x + w - 20.0, y, 20.0, 20.0),
+        "+",
+        false,
+        Target::Set(id.into(), (cur + 1).min(max) as f32),
+        brand::MAIN,
+    );
 }
 
-/// The shown part's shape choices.
-fn shape_row(ui: &mut Ui) {
-    let pre = prefix(ui.st.part);
-    let id = format!("{pre}_shape");
-    let cur = ui.m.plain(&id).round() as usize;
-    ui.c.text(CAP, 16.0, 116.0, plug::DIM, "TIMBRE");
-    for (i, name) in SHAPES.iter().enumerate() {
-        let r = rr(70.0 + i as f32 * 80.0, 112.0, 74.0, 22.0);
-        button(ui, r, name, cur == i, Target::Set(id.clone(), i as f32), brand::MAIN);
+/// The part selector row: PART A / PART B tabs, the shown part's on switch, copy, octave, part mode.
+fn part_row(ui: &mut Ui) {
+    let y = 54.0;
+    for p in 0..2u8 {
+        let r = rr(16.0 + p as f32 * 108.0, y, 102.0, 24.0);
+        let col = Color::rgb(PART_COLORS[p as usize]);
+        button(
+            ui,
+            r,
+            if p == 0 { "PART A" } else { "PART B" },
+            ui.st.part == p,
+            Target::PartTab(p),
+            col,
+        );
     }
+    let pre = prefix(ui.st.part);
+    let col = Color::rgb(PART_COLORS[ui.st.part as usize]);
+    let on_id = format!("{pre}_on");
+    let on = ui.m.plain(&on_id) > 0.5;
+    button(
+        ui,
+        rr(238.0, y, 52.0, 24.0),
+        if on { "ON" } else { "OFF" },
+        on,
+        Target::Toggle(on_id),
+        col,
+    );
+    button(
+        ui,
+        rr(296.0, y, 62.0, 24.0),
+        if ui.st.part == 0 {
+            "COPY A>B"
+        } else {
+            "COPY B>A"
+        },
+        false,
+        Target::CopyPart,
+        brand::MAIN,
+    );
+    // Octave stepper.
+    let oct_id = format!("{pre}_octave");
+    let oct = ui.m.plain(&oct_id).round() as i32;
+    ui.c.text(CAP, 366.0, y + 4.0, plug::DIM, "OCT");
+    stepper(
+        ui,
+        &oct_id,
+        390.0,
+        y + 2.0,
+        76.0,
+        &format!("{oct:+}"),
+        -2,
+        2,
+    );
+    // Part mode cycles on click.
+    let mode = ui.m.plain("partmode").round() as i32;
+    let mode_label = ["MIX A+B", "PART A", "PART B", "NOTE CH"][mode.clamp(0, 3) as usize];
+    button(
+        ui,
+        rr(474.0, y, 78.0, 24.0),
+        mode_label,
+        false,
+        Target::Set("partmode".into(), ((mode + 1) % 4) as f32),
+        brand::MAIN,
+    );
+}
+
+/// The timbre row: the two shape steppers and the mix knob (Harmor's Timbre 1 / Timbre 2 / MIX).
+fn timbre_row(ui: &mut Ui) {
+    let pre = prefix(ui.st.part);
+    ui.c.text(CAP, 16.0, 92.0, plug::DIM, "TIMBRE");
+    for (slot, x) in [(1usize, 70.0f32), (2, 286.0)] {
+        let id = format!("{pre}_shape{slot}");
+        let cur = ui.m.plain(&id).round() as i32;
+        ui.c.text(CAP, x, 92.0, plug::DIM, if slot == 1 { "1" } else { "2" });
+        stepper(
+            ui,
+            &id,
+            x + 12.0,
+            86.0,
+            190.0,
+            SHAPES[cur.clamp(0, 5) as usize],
+            0,
+            5,
+        );
+    }
+    knob(ui, &format!("{pre}_tmix"), 524.0, 96.0, 11.0, "MIX", false);
 }
 
 /// The shape recipe, mirrored from the DSP for display.
@@ -215,13 +345,25 @@ fn shape_amp(shape: i32, k: usize) -> f32 {
     match shape {
         0 => 1.0 / kf,
         1 => {
-            if k % 2 == 1 { 1.0 / kf } else { 0.0 }
+            if k % 2 == 1 {
+                1.0 / kf
+            } else {
+                0.0
+            }
         }
         2 => {
-            if k % 2 == 1 { 1.0 / (kf * kf) } else { 0.0 }
+            if k % 2 == 1 {
+                1.0 / (kf * kf)
+            } else {
+                0.0
+            }
         }
         3 => {
-            if k == 1 { 1.0 } else { 0.0 }
+            if k == 1 {
+                1.0
+            } else {
+                0.0
+            }
         }
         4 => match k {
             1 | 2 | 3 | 4 | 6 | 8 => 1.0 / kf.sqrt(),
@@ -231,104 +373,201 @@ fn shape_amp(shape: i32, k: usize) -> f32 {
     }
 }
 
-/// The drawable spectrum: the partial curve (shape x bands x brightness) behind the 12 band bars.
-fn spectrum(ui: &mut Ui) {
+/// The drawable harmonic spectrum: one column per partial; the bar is the drawn level, the bright cap
+/// shows the resulting amplitude after the timbre blend.
+fn spectrum(ui: &mut Ui, spec: &[f32]) {
     let area = spectrum_rect();
+    ui.c.text(
+        CAP,
+        area.x + 2.0,
+        area.y - 14.0,
+        plug::DIM,
+        "HARMONICS — drag to draw the partial levels",
+    );
+    let presets: [(&str, u8); 4] = [("FLAT", 0), ("DECAY", 1), ("ODD", 2), ("CLEAR", 3)];
+    for (i, (label, id)) in presets.iter().enumerate() {
+        let r = rr(364.0 + i as f32 * 48.0, area.y - 18.0, 44.0, 16.0);
+        button(ui, r, label, false, Target::SpecPreset(*id), brand::MAIN);
+    }
     ui.c.fill_rrect(area, 6.0, plug::WELL);
-    ui.c.fill_rect(rr(area.x, area.y + area.h - 1.0, area.w, 1.0), plug::WELL_LINE);
     let pre = prefix(ui.st.part);
-    let shape = ui.m.plain(&format!("{pre}_shape")).round() as i32;
-    let bright = ui.m.norm("bright");
-    let tilt = (0.5 - bright) * -1.4;
-    let bands: Vec<f32> = (0..BANDS).map(|i| ui.m.norm(&band_id(ui.st.part, i))).collect();
-    let band_gain = |k: usize| -> f32 {
-        if k <= 1 {
-            return bands[0];
-        }
-        let x = (k as f32).ln() / 64f32.ln() * (BANDS - 1) as f32;
-        let i = (x as usize).min(BANDS - 2);
-        let f = x - i as f32;
-        bands[i] * (1.0 - f) + bands[i + 1] * f
-    };
-    // The partial curve as vertical stems.
+    let s1 = ui.m.plain(&format!("{pre}_shape1")).round() as i32;
+    let s2 = ui.m.plain(&format!("{pre}_shape2")).round() as i32;
+    let tm = ui.m.norm(&format!("{pre}_tmix"));
     let col = Color::rgb(PART_COLORS[ui.st.part as usize]);
-    for k in 1..=64usize {
-        let a = (shape_amp(shape, k) * band_gain(k) * (k as f32).powf(tilt)).clamp(0.0, 1.0);
-        if a <= 0.01 {
-            continue;
-        }
-        let x = area.x + 8.0 + (k as f32 - 1.0) / 63.0 * (area.w - 16.0);
-        let h = a * (area.h - 30.0);
-        ui.c.fill_rect(rr(x, area.y + area.h - 8.0 - h, 2.0, h), col.with_alpha(150));
+    let cw = area.w / PARTIALS as f32;
+    for k in 0..PARTIALS {
+        let v = spec.get(k).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+        let x = area.x + k as f32 * cw;
+        let bh = v * (area.h - 12.0);
+        ui.c.fill_rrect(
+            rr(x + 1.0, area.y + area.h - 6.0 - bh, cw - 2.0, bh.max(1.5)),
+            2.0,
+            col.with_alpha(110),
+        );
+        // Resulting amplitude cap (timbre blend x drawn level), scaled so a saw fundamental reaches the top.
+        let blend = shape_amp(s1, k + 1) * (1.0 - tm) + shape_amp(s2, k + 1) * tm;
+        let res = (blend.abs() * v).clamp(0.0, 1.0);
+        let ry = area.y + area.h - 6.0 - res * (area.h - 12.0);
+        ui.c.fill_rect(rr(x + 1.0, ry - 1.5, cw - 2.0, 3.0), col);
+        ui.hit(rr(x, area.y, cw, area.h), Target::Spec(k));
     }
-    // The band bars.
-    let bw = area.w / BANDS as f32;
-    for i in 0..BANDS {
-        let v = bands[i];
-        let r = rr(area.x + i as f32 * bw + 6.0, area.y + 8.0, bw - 12.0, area.h - 16.0);
-        let bh = v * (area.h - 40.0);
-        ui.c.fill_rrect(rr(r.x, r.y + r.h - bh, r.w, bh.max(2.0)), 3.0, col.with_alpha(70));
-        ui.c.fill_rect(rr(r.x, r.y + r.h - bh - 2.0, r.w, 3.0), col);
-        ui.hit(r, Target::Band(i));
-    }
-    ui.c.text(CAP, area.x + 2.0, area.y - 14.0, plug::DIM, "SPECTRUM — drag the bands; the stems show the partials");
 }
 
 /// A lemon knob with its caption and value.
-fn knob(ui: &mut Ui, id: &str, cx: f32, cy: f32, cap: &str, bipolar: bool) {
+fn knob(ui: &mut Ui, id: &str, cx: f32, cy: f32, r: f32, cap: &str, bipolar: bool) {
     let target = Target::Knob(id.into());
-    let hr = rr(cx - 22.0, cy - 22.0, 44.0, 44.0);
+    let hr = rr(cx - r - 7.0, cy - r - 7.0, (r + 7.0) * 2.0, (r + 7.0) * 2.0);
     let st = ui.state(hr, &target);
-    lemon::knob(ui.c, ui.t, cx, cy, 15.0, ui.m.norm(id), bipolar, kit::KnobLook::Ball, st);
-    ui.c.text_center(CAP, rr(cx - 40.0, cy + 20.0, 80.0, 12.0), plug::DIM, cap);
+    lemon::knob(
+        ui.c,
+        ui.t,
+        cx,
+        cy,
+        r,
+        ui.m.norm(id),
+        bipolar,
+        kit::KnobLook::Ball,
+        st,
+    );
+    ui.c.text_center(CAP, rr(cx - 40.0, cy + r + 3.0, 80.0, 12.0), plug::DIM, cap);
     ui.hit(hr, target);
 }
 
-/// The shown part's knobs: level, detune, octave steppers.
-fn part_knobs(ui: &mut Ui) {
-    let pre = prefix(ui.st.part);
-    let y = 336.0;
-    knob(ui, &format!("{pre}_level"), 60.0, y, "LEVEL", false);
-    knob(ui, &format!("{pre}_detune"), 140.0, y, "DETUNE", true);
-    // Octave stepper.
-    let oct_id = format!("{pre}_octave");
-    let oct = ui.m.plain(&oct_id).round() as i32;
-    ui.c.text(CAP, 196.0, y - 22.0, plug::DIM, "OCTAVE");
-    button(ui, rr(190.0, y - 12.0, 30.0, 24.0), "-", false, Target::Set(oct_id.clone(), (oct - 1).max(-2) as f32), brand::MAIN);
-    ui.c.text_center(LABEL, rr(224.0, y - 14.0, 40.0, 16.0), brand::TEXT, &format!("{oct:+}"));
-    button(ui, rr(268.0, y - 12.0, 30.0, 24.0), "+", false, Target::Set(oct_id.clone(), (oct + 1).min(2) as f32), brand::MAIN);
-    ui.c.text(CAP, 330.0, y - 22.0, plug::DIM, "Drag a knob, right-click for its menu (reset / type a value / automation).");
-    ui.c.text(CAP, 330.0, y - 8.0, plug::DIM, "NOTE CH mode: piano-roll channel 1 = Part A, channel 2 = Part B.");
+/// One labelled section column of small knobs (two rows of three).
+fn section(ui: &mut Ui, x: f32, title: &str, knobs: [(&str, &str, bool); 6]) {
+    ui.c.text(CAP, x + 2.0, 244.0, plug::DIM, title);
+    for (i, (id, cap, bi)) in knobs.iter().enumerate() {
+        let cx = x + 30.0 + (i % 3) as f32 * 58.0;
+        let cy = if i < 3 { 272.0 } else { 318.0 };
+        knob(ui, id, cx, cy, 10.0, cap, *bi);
+    }
 }
 
-/// The global row: part mix, brightness, prism, the ADSR and unison / gain.
-fn global_row(ui: &mut Ui) {
-    let y = 402.0;
-    knob(ui, "mix", 40.0, y, "MIX A/B", false);
-    knob(ui, "bright", 110.0, y, "BRIGHT", false);
-    knob(ui, "prism", 180.0, y, "PRISM", false);
-    knob(ui, "attack", 260.0, y, "ATTACK", false);
-    knob(ui, "decay", 330.0, y, "DECAY", false);
-    knob(ui, "sustain", 400.0, y, "SUSTAIN", false);
-    knob(ui, "release", 470.0, y, "RELEASE", false);
-    // Unison count stepper + gain knob at the right edge would crowd; unison is a Set stepper above the row.
+/// The per-part sections: Spectral | Filter 1 + part level/detune | Filter 2 + EQ.
+fn sections(ui: &mut Ui) {
+    let pre = prefix(ui.st.part);
+    let f = |name: &str| format!("{pre}_{name}");
+    section(
+        ui,
+        16.0,
+        "SPECTRAL",
+        [
+            (&f("prism"), "PRISM", false),
+            (&f("blur"), "BLUR", false),
+            (&f("blurtime"), "B-TIME", false),
+            (&f("harm"), "HARM", false),
+            (&f("harmw"), "H-WIDTH", false),
+            (&f("pluck"), "PLUCK", false),
+        ],
+    );
+    // Filter type steppers sit in the section title rows.
+    section(
+        ui,
+        196.0,
+        "FILTER 1 · PART",
+        [
+            (&f("f1freq"), "F1 FREQ", false),
+            (&f("f1res"), "F1 RES", false),
+            (&f("f1key"), "F1 KEY", false),
+            (&f("f1env"), "F1 ENV", true),
+            (&f("level"), "LEVEL", false),
+            (&f("detune"), "DETUNE", true),
+        ],
+    );
+    section(
+        ui,
+        376.0,
+        "FILTER 2 · EQ",
+        [
+            (&f("f2freq"), "F2 FREQ", false),
+            (&f("f2res"), "F2 RES", false),
+            (&f("f2env"), "F2 ENV", true),
+            (&f("eqlow"), "EQ LOW", true),
+            (&f("eqmid"), "EQ MID", true),
+            (&f("eqhigh"), "EQ HIGH", true),
+        ],
+    );
+    for (slot, x) in [(1usize, 196.0f32), (2, 376.0)] {
+        let id = f(&format!("f{slot}type"));
+        let cur = ui.m.plain(&id).round() as i32;
+        stepper(
+            ui,
+            &id,
+            x + 88.0,
+            238.0,
+            88.0,
+            FILTER_TYPES[cur.clamp(0, 5) as usize],
+            0,
+            5,
+        );
+    }
+    // Phaser row of the shown part, right under the sections.
+    ui.c.text(CAP, 18.0, 348.0, plug::DIM, "PHASER");
+    knob(ui, &f("phmix"), 84.0, 344.0, 10.0, "MIX", false);
+    knob(ui, &f("phwidth"), 142.0, 344.0, 10.0, "WIDTH", false);
+    knob(ui, &f("phofs"), 200.0, 344.0, 10.0, "OFFSET", false);
+    knob(ui, &f("phspeed"), 258.0, 344.0, 10.0, "SPEED", false);
+}
+
+/// The global rows: envelope + mix/gain, then vibrato / portamento / strum / legato / unison.
+fn global_rows(ui: &mut Ui) {
+    ui.c.text(CAP, 330.0, 348.0, plug::DIM, "ENVELOPE");
+    knob(ui, "attack", 380.0, 344.0, 10.0, "ATTACK", false);
+    knob(ui, "decay", 428.0, 344.0, 10.0, "DECAY", false);
+    knob(ui, "sustain", 476.0, 344.0, 10.0, "SUSTAIN", false);
+    knob(ui, "release", 524.0, 344.0, 10.0, "RELEASE", false);
+    let y = 404.0;
+    knob(ui, "mix", 36.0, y, 11.0, "MIX A/B", false);
+    knob(ui, "gain", 92.0, y, 11.0, "GAIN", false);
+    knob(ui, "vibdepth", 148.0, y, 11.0, "VIB DEPTH", false);
+    knob(ui, "vibspeed", 204.0, y, 11.0, "VIB SPEED", false);
+    knob(ui, "porta", 260.0, y, 11.0, "PORTA", false);
+    knob(ui, "strum", 316.0, y, 11.0, "STRUM", false);
+    knob(ui, "udetune", 372.0, y, 11.0, "U-DETUNE", false);
+    knob(ui, "upan", 428.0, y, 11.0, "U-PAN", false);
     let u = ui.m.plain("unison").round() as i32;
-    ui.c.text(CAP, 516.0, y - 34.0, plug::DIM, "UNI");
-    button(ui, rr(508.0, y - 24.0, 44.0, 20.0), &format!("{u} vox"), false, Target::Set("unison".into(), if u >= 4 { 1.0 } else { (u + 1) as f32 }), brand::MAIN);
-    knob(ui, "gain", 530.0, y + 6.0, "GAIN", false);
+    stepper(ui, "unison", 478.0, 366.0, 74.0, &format!("UNI {u}"), 1, 4);
+    let leg = ui.m.plain("legato") > 0.5;
+    button(
+        ui,
+        rr(478.0, y - 12.0, 74.0, 24.0),
+        "LEGATO",
+        leg,
+        Target::Toggle("legato".into()),
+        brand::MAIN,
+    );
 }
 
 /// The hint line for a hovered target.
 pub fn hint(t: &Target, m: &dyn Model, part: u8) -> String {
     match t {
-        Target::Knob(id) | Target::Toggle(id) | Target::List(id) => format!("{}: {}", pretty(id), m.text(id)),
+        Target::Knob(id) | Target::Toggle(id) | Target::List(id) => {
+            format!("{}: {}", pretty(id), m.text(id))
+        }
         Target::Set(id, _) => pretty(id).to_string(),
         Target::PartTab(p) => format!("Show part {}", if *p == 0 { "A" } else { "B" }),
-        Target::Band(i) => format!("Spectrum band {}: {}", i + 1, m.text(&band_id(part, *i))),
+        Target::Spec(k) => format!(
+            "Partial {} of part {} — drag to draw its level",
+            k + 1,
+            if part == 0 { "A" } else { "B" }
+        ),
+        Target::SpecPreset(p) => [
+            "Spectrum: flat (neutral)",
+            "Spectrum: decay slope",
+            "Spectrum: odd partials only",
+            "Spectrum: clear",
+        ][*p as usize]
+            .to_string(),
+        Target::CopyPart => format!(
+            "Copy part {} onto part {}",
+            if part == 0 { "A" } else { "B" },
+            if part == 0 { "B" } else { "A" }
+        ),
     }
 }
 
-/// A readable name for a parameter id ("aa_band3" -> "Part A band 3").
+/// A readable name for a parameter id ("aa_f1freq" -> "Part A f1freq").
 pub fn pretty(id: &str) -> String {
     let (part, rest) = match id.split_once('_') {
         Some(("aa", r)) => ("Part A ", r),
