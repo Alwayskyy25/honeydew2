@@ -91,7 +91,9 @@ const SPEC: &[(&str, &[&str])] = &[
         "LEMON STUDIO",
         &[
             "Citrus",
+            "Lemon Additive",
             "Lemon Drum Sampler",
+            "Lemon Pitch",
             "Lemon Sampler",
             "Lemon Slicer",
             "Lemon Trio",
@@ -233,7 +235,9 @@ fn where_no_instrument_goes_the_list_leaves_out_instrument_the_synths_and_the_no
             "Lemon Trio",
             "Lemon Sampler",
             "Citrus",
+            "Lemon Additive",
             "Lemon Drum Sampler",
+            "Lemon Pitch",
             "Lemon Slicer",
         ];
         let notes = [
@@ -913,7 +917,9 @@ fn top_level_lists_the_actions_then_the_instruments_then_the_effects_each_by_typ
             "SoundFont Player",
             // The built-in plugins, which have no type id of their own: by name.
             "Citrus",
+            "Lemon Additive",
             "Lemon Drum Sampler",
+            "Lemon Pitch",
             "Lemon Sampler",
             "Lemon Slicer",
             "Lemon Trio",
