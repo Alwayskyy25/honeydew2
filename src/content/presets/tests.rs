@@ -49,6 +49,14 @@ fn the_banks_hold_the_planned_presets_per_category() {
         counts(bank(39)),
         [("Bass", 3), ("Lead", 3), ("Pad", 2), ("Synth", 2)]
     );
+    // The effect banks (issue #185): three flat presets each, four for the Leveller.
+    for t in [
+        3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 16, 18, 25, 27, 28, 29, 30, 32, 34, 35, 40, 41, 42, 43,
+        44, 45, 46, 47, 51, 1004, 1005, 1006, 1007, 1008,
+    ] {
+        assert_eq!(counts(bank(t)), [("", 3)], "{t}");
+    }
+    assert_eq!(counts(bank(20)), [("", 4)]);
 }
 
 #[test]
@@ -122,7 +130,7 @@ fn each_preset_reads_back_through_the_preset_loader_and_fits_its_module() {
             read += 1;
         }
     }
-    assert_eq!(read, 12 + 11 + 8 + 14 + 10);
+    assert_eq!(read, 12 + 11 + 8 + 14 + 10 + 34 * 3 + 4);
 }
 
 /// Each module folder lists its categories, or (Transistor Bass) its presets, as the picker's root shows them after
@@ -148,6 +156,14 @@ fn each_module_folder_lists_its_categories_or_its_presets() {
     assert_eq!(tb.len(), 8);
     assert!(
         tb.iter()
+            .all(|(name, folder)| !folder && name.ends_with(".flmpst"))
+    );
+    // An effect bank lists its presets flat too (issue #185).
+    let leveller = rows("Leveler");
+    assert_eq!(leveller.len(), 4);
+    assert!(
+        leveller
+            .iter()
             .all(|(name, folder)| !folder && name.ends_with(".flmpst"))
     );
 }

@@ -20,12 +20,14 @@
 //! DISTORTION page: on, Drive (`#9`) 0 unless the preset drives it, Drive Vol. (`#10`) as makeup, so the bank peaks at
 //! −9 … −11 dBFS like the other basses.
 //!
-//! GMSynth ([`gm_synth`]) and 3x Osc ([`three_osc`]) keep their banks in their own files.
+//! GMSynth ([`gm_synth`]) and 3x Osc ([`three_osc`]) keep their banks in their own files. The effect banks
+//! ([`effects`]) list their presets flat in the module folder, as Transistor Bass's does.
 
 use std::collections::HashMap;
 use std::iter::once;
 use std::path::Path;
 
+mod effects;
 mod gm_synth;
 mod three_osc;
 
@@ -54,6 +56,7 @@ fn banks() -> impl Iterator<Item = (u16, &'static [Preset])> {
         .chain(once((19, TRANSISTOR_BASS)))
         .chain(once((2, gm_synth::BANK)))
         .chain(once((39, three_osc::BANK)))
+        .chain(effects::BANKS.iter().copied())
 }
 
 /// The param `name` names in `spec`, as [`ModuleInstance::param`] indexes it: `#n` (digits only), or the one param or

@@ -513,6 +513,66 @@ mod tests {
         assert!((quiet[0] - 0.25 * plain[0]).abs() < 1e-3, "{quiet:?}");
     }
 
+    /// Issue #180: switching an operator's volume envelope on must not silence it. A fresh articulator's
+    /// envelope amount and shape are the defaults (the editor offers no control for the amount), and with
+    /// either at its old default — amount 0, or one point at level 0 — the envelope's output multiplied the
+    /// operator's volume away to nothing, on every operator.
+    #[test]
+    fn a_switched_on_volume_envelope_still_sounds() {
+        let settled = |st: State| {
+            let mut c = Citrus::new(48000);
+            c.set_state(st);
+            note(&mut c);
+            for _ in 0..10 {
+                peak(&mut c);
+            }
+            (0..10).map(|_| peak(&mut c)).fold(0.0f32, f32::max)
+        };
+        // Operator 1, its volume envelope switched on and otherwise untouched.
+        let mut st = default_patch();
+        st.modules[0].arts[crate::state::OP_VOLUME].env.enabled = true;
+        let with_env = settled(st);
+        assert!(with_env > 0.1, "operator 1 sounds with its envelope on: {with_env}");
+        // Operator 2 alone to the output, its volume envelope on.
+        let mut st = default_patch();
+        st.matrix[8] = 0;
+        st.matrix[17] = 256;
+        st.modules[1].header[1] = 256;
+        st.modules[1].header[2] = 1200;
+        st.modules[1].op.levels[0] = 1.0;
+        st.modules[1].arts[crate::state::OP_VOLUME].env.enabled = true;
+        let op2 = settled(st);
+        assert!(op2 > 0.1, "operator 2 sounds with its envelope on: {op2}");
+    }
+
+    /// Issue #180: an edited volume envelope shapes the note — it is not merely bypassed. A sustain point at
+    /// half level settles the note at half the level of the same patch with the envelope off.
+    #[test]
+    fn a_drawn_volume_envelope_shapes_the_note() {
+        let settled = |st: State| {
+            let mut c = Citrus::new(48000);
+            c.set_state(st);
+            note(&mut c);
+            for _ in 0..20 {
+                peak(&mut c);
+            }
+            (0..10).map(|_| peak(&mut c)).fold(0.0f32, f32::max)
+        };
+        let plain = settled(default_patch());
+        let mut st = default_patch();
+        let env = &mut st.modules[0].arts[crate::state::OP_VOLUME].env;
+        env.points = [(0.0f32, 0.0f32), (0.5, 1.0), (0.5, 0.5), (0.5, 0.5)]
+            .iter()
+            .map(|&(dist, level)| crate::curve::Point { dist, level, ..Default::default() })
+            .collect();
+        env.decay = 1;
+        env.sustain = 2;
+        env.enabled = true;
+        env.prepare();
+        let shaped = settled(st);
+        assert!((shaped - plain * 0.5).abs() < plain * 0.15, "the sustain level halves the note: {shaped} vs {plain}");
+    }
+
     /// A note's mod X / Y reach every voice of the note only, and stay through a change of the channel's levels.
     #[test]
     fn a_notes_mods_reach_its_voices() {

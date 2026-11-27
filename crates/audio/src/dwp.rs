@@ -570,3 +570,92 @@ fn cstm_zone(d: &[u8]) -> Zone {
         ..default
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A record as the format writes it: `u32 tag, u32 len, u32 reserved (0)`, then the payload.
+    fn rec(tag: u32, data: &[u8]) -> Vec<u8> {
+        [
+            &tag.to_le_bytes()[..],
+            &(data.len() as u32).to_le_bytes(),
+            &0u32.to_le_bytes(),
+            data,
+        ]
+        .concat()
+    }
+
+    /// A zone container (tag 3) laid out as an independent audit of a real DirectWave file found it
+    /// (Dwp-Creator Doc 05/06, verified against a 48-sample chromatic instrument): `0x1F4` is 25 bytes with
+    /// root/low/high at 0/1/2; `0x1F7` is 40 bytes with frames at 0, channels at 8, bytes per sample at 12,
+    /// the rate as an `f32` at 16 and bits at 36.
+    fn audited_zone(root: u8, rate: f32, embedded: bool) -> Vec<u8> {
+        let mut keys = vec![root, 0, 127, 0, 127, 0, 0, 0, 0];
+        keys.extend_from_slice(&1.0f32.to_le_bytes()); // gain at 9
+        keys.extend_from_slice(&0.0f32.to_le_bytes()); // pan at 13
+        keys.extend_from_slice(&[0; 8]); // 17..25, the lead-in word at 21 among them
+        let format = [
+            &1000u64.to_le_bytes()[..],
+            &1u32.to_le_bytes(),
+            &2u32.to_le_bytes(),
+            &rate.to_le_bytes(),
+            &0i32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &16u32.to_le_bytes(),
+        ]
+        .concat();
+        let floats: Vec<u8> = [0.0f32, 1.0, 1.0, 0.1]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut zone = [
+            rec(0x1F4, &keys),
+            rec(0x1F5, b"Test_C3_127"),
+            rec(0x1F6, b"D:\\Test\\Test_C3_127.wav"),
+            rec(0x1F7, &format),
+            rec(0x1FD, &floats),
+        ]
+        .concat();
+        if embedded {
+            // 1000 frames of 16-bit mono silence.
+            zone.extend(rec(0x205, &[0u8; 2000]));
+        }
+        zone.extend(rec(0x0004, &[]));
+        zone
+    }
+
+    fn audited_file(root: u8, rate: f32, embedded: bool) -> Vec<u8> {
+        let program = [
+            rec(0x66, b"Test"),
+            rec(3, &audited_zone(root, rate, embedded)),
+            rec(2, &[]),
+        ]
+        .concat();
+        [&b"DwPr"[..], &38u32.to_le_bytes(), &rec(1, &program)].concat()
+    }
+
+    /// #179: a `.dwp` written in the real DirectWave layout (as an independent audit of a real file
+    /// documents it) reads back its roots, key ranges, file names and — for embedded audio — its sample
+    /// rate, here 22050 Hz rather than the factory files' 44100, so a rate or root misread would show.
+    #[test]
+    fn a_dwp_in_the_real_layout_reads_back_its_roots_keys_and_rates() {
+        let bytes = audited_file(36, 22_050.0, false);
+        let zones = read(&bytes).expect("a program");
+        assert_eq!(zones.len(), 1);
+        let z = &zones[0];
+        assert_eq!(z.zone.root, 36);
+        assert_eq!((z.zone.key_low, z.zone.key_high), (0, 127));
+        assert_eq!(z.file.as_deref(), Some("Test_C3_127.wav"));
+        assert_eq!(z.declared_frames(), 1000);
+
+        // The embedded variant: the decoded sample must carry the 0x1F7 rate.
+        let bytes = audited_file(36, 22_050.0, true);
+        let zones = read(&bytes).expect("a program");
+        let sample = zones[0].decode().expect("embedded audio decodes");
+        assert_eq!(sample.sample_rate, 22_050);
+        assert_eq!(sample.frames(), 1000);
+    }
+}

@@ -9,7 +9,7 @@
 // spec: plugins/sytrus.md ("The state", "A module", "Articulators", "Older states"), plugins/sytrus-effects.md
 // ("Settings")
 
-use crate::curve::{Curve, ENVELOPE, LFO, MAP};
+use crate::curve::{Curve, Point, ENVELOPE, LFO, MAP};
 use crate::num::Reader;
 
 /// Operators 1..6, filters 1..3, module 10 (the effects bus's own articulators).
@@ -58,12 +58,33 @@ pub struct Articulator {
     pub maps: [Curve; 6],
 }
 
+/// The envelope of a fresh articulator, shaped as FL's untouched envelope: a quick attack to full level, a
+/// decay segment, a sustain point at full level and a release fall to zero. The bare curve default (one point
+/// at level 0) holds its output at 0 forever, so an envelope switched on before it is edited would silence its
+/// articulator outright (issue #180).
+fn default_envelope() -> Curve {
+    let mut c = Curve::default_of(ENVELOPE);
+    c.points = vec![
+        Point { dist: 0.0, level: 0.0, ..Point::default() },
+        Point { dist: 1.0, level: 1.0, ..Point::default() },
+        Point { dist: 1.0, level: 1.0, ..Point::default() },
+        Point { dist: 1.0, level: 0.0, ..Point::default() },
+    ];
+    c.decay = 1;
+    c.sustain = 2;
+    c.prepare();
+    c
+}
+
 impl Default for Articulator {
     fn default() -> Self {
         Articulator {
             base: 0.0,
-            env_amount: 0.0,
-            env: Curve::default_of(ENVELOPE),
+            // An envelope at full amount until a state says otherwise (Love Philter's articulators default
+            // their amount to 1 as well). At 0 the envelope's output is multiplied away and switching an
+            // envelope on silences the articulator (issue #180); no editor control sets this value.
+            env_amount: 1.0,
+            env: default_envelope(),
             lfo: Curve::default_of(LFO),
             maps: std::array::from_fn(|_| Curve::default_of(MAP)),
         }

@@ -3130,6 +3130,38 @@ mod component {
         assert_eq!(rig.all, [DONE]);
     }
 
+    /// #130: a slide note paints its look (a ▶ path and its stripes) over its cell; a plain note paints neither.
+    /// (The flag tests above cannot see a painting regression; this one counts the shapes themselves.)
+    #[test]
+    fn a_slide_note_paints_its_arrow_and_stripes() {
+        let mut rig = Rig::new(vec![n(0, 128.0, 60), super::slid(256, 128.0, 62)]);
+        rig.frame(vec![]);
+        let count = |c: Pos2| {
+            let mut paths = 0;
+            let mut segs = 0;
+            for s in &rig.shapes {
+                match s {
+                    egui::Shape::Path(p) => {
+                        if p.points.iter().any(|pt| (pt.x - c.x).abs() < 40.0 && (pt.y - c.y).abs() < 8.0) {
+                            paths += 1;
+                        }
+                    }
+                    egui::Shape::LineSegment { points, .. } => {
+                        if points.iter().any(|pt| (pt.x - c.x).abs() < 40.0 && (pt.y - c.y).abs() < 8.0) {
+                            segs += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (paths, segs)
+        };
+        assert_eq!(count(at(64.0, 60)), (0, 0), "a plain note paints no slide look");
+        let (paths, segs) = count(at(320.0, 62));
+        assert_eq!(paths, 1, "the slide arrow");
+        assert!(segs >= 4, "the slide stripes: {segs}");
+    }
+
     #[test]
     fn transpose_by_drags_an_offset_and_applies_it_on_release() {
         let mut rig = Rig::new(vec![n(0, 64.0, 60), n(128, 64.0, 70)]);
