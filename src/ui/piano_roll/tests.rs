@@ -3142,12 +3142,18 @@ mod component {
             for s in &rig.shapes {
                 match s {
                     egui::Shape::Path(p) => {
-                        if p.points.iter().any(|pt| (pt.x - c.x).abs() < 40.0 && (pt.y - c.y).abs() < 8.0) {
+                        if p.points
+                            .iter()
+                            .any(|pt| (pt.x - c.x).abs() < 40.0 && (pt.y - c.y).abs() < 8.0)
+                        {
                             paths += 1;
                         }
                     }
                     egui::Shape::LineSegment { points, .. } => {
-                        if points.iter().any(|pt| (pt.x - c.x).abs() < 40.0 && (pt.y - c.y).abs() < 8.0) {
+                        if points
+                            .iter()
+                            .any(|pt| (pt.x - c.x).abs() < 40.0 && (pt.y - c.y).abs() < 8.0)
+                        {
                             segs += 1;
                         }
                     }
@@ -3156,7 +3162,11 @@ mod component {
             }
             (paths, segs)
         };
-        assert_eq!(count(at(64.0, 60)), (0, 0), "a plain note paints no slide look");
+        assert_eq!(
+            count(at(64.0, 60)),
+            (0, 0),
+            "a plain note paints no slide look"
+        );
         let (paths, segs) = count(at(320.0, 62));
         assert_eq!(paths, 1, "the slide arrow");
         assert!(segs >= 4, "the slide stripes: {segs}");

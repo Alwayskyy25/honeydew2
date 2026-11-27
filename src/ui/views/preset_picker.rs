@@ -1810,7 +1810,14 @@ mod tests {
         // Reverb 2: our own built-in presets, then the `Reverb` folder's presets right at its root.
         assert_eq!(
             module(32, &[]),
-            [MY_FILES, DEFAULT, "Big Hall", "Long Wash", "Small Room", "Gen Hall"]
+            [
+                MY_FILES,
+                DEFAULT,
+                "Big Hall",
+                "Long Wash",
+                "Small Room",
+                "Gen Hall"
+            ]
         );
         // DW Sampler: `My Instruments` beside `My Files`, then both DirectWave folders, the `EXP` one's after; a
         // program without its sample folder.
