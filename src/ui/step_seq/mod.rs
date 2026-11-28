@@ -784,17 +784,13 @@ pub(crate) fn add_drum(
 }
 
 /// A row's two level-meter bars (L, R) at `levels`, `t` being the hairline (2 hairlines thick, 1 apart).
-/// `full` (the mixer fully out): horizontal along the bottom of the `page` area, filling from the left, within the
-/// eighth of the row the strip's centred 75 % page row leaves under it (a short row thins the hairline), so no strip
-/// control covers them (#85). Otherwise two thin vertical bars at the `header`'s right edge, in the 5 hairlines its
-/// text leaves, filling from the bottom.
+/// `full` (the mixer fully out): horizontal, filling from the left, filling the eighth of the row the strip's
+/// centred 75 % page row leaves under it — L in its top two fifths, R in its bottom two fifths — so the pair sits
+/// hard under the strip's controls, as thick as that room allows (a hairline pair there read as no meter at all
+/// on a phone), and no strip control covers them (#85). Otherwise two thin vertical bars at the `header`'s right
+/// edge, in the 5 hairlines its text leaves, filling from the bottom.
 fn meter_bars(header: Rect, page: Rect, full: bool, levels: [f32; 2], t: f32) -> [Rect; 2] {
     let level = |i: usize| levels[i].clamp(0.0, 1.0);
-    let t = if full {
-        t.min(page.height() / 8.0 / 5.0)
-    } else {
-        t
-    };
     // Bar i's band: L 5 to 3 hairlines from the edge, R the last 2.
     let band = |edge: f32, i: usize| {
         let far = edge - if i == 0 { 3.0 * t } else { 0.0 };
@@ -802,8 +798,15 @@ fn meter_bars(header: Rect, page: Rect, full: bool, levels: [f32; 2], t: f32) ->
     };
     std::array::from_fn(|i| {
         if full {
+            let eighth = page.height() / 8.0;
+            let bar = 2.0 * eighth / 5.0;
+            let y = if i == 0 {
+                Rangef::new(page.bottom() - eighth, page.bottom() - eighth + bar)
+            } else {
+                Rangef::new(page.bottom() - bar, page.bottom())
+            };
             let x = Rangef::new(page.left(), page.left() + level(i) * page.width());
-            Rect::from_x_y_ranges(x, band(page.bottom(), i))
+            Rect::from_x_y_ranges(x, y)
         } else {
             let y = Rangef::new(
                 header.bottom() - level(i) * header.height(),

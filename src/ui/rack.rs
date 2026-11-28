@@ -347,14 +347,18 @@ pub fn flow_sends(
 const RACK_W: f32 = 20.0;
 
 /// The rack over the content `area` (the screen above the keyboard panel), slid in by `open` (0 closed … 1 open): R =
-/// trunc(min(20 U, W)) wide, or W in a `portrait` window ([`is_portrait`](crate::metrics::is_portrait)), and the
-/// area's height, its left edge at the area's right − `open`·R. Closed, it lies just past the area's right edge.
+/// trunc(min(20 U, W)) wide, or, in a `portrait` window ([`is_portrait`](crate::metrics::is_portrait)), W times the
+/// UI scale's fraction of its 100 % unit — the whole width at 100 %, narrowing with the scale below it, the way
+/// FL Studio Mobile's portrait panel does — and the area's height, its left edge at the area's right − `open`·R.
+/// Closed, it lies just past the area's right edge.
 pub fn rack_rect(area: Rect, open: f32, portrait: bool, m: &Metrics) -> Rect {
     let ppp = m.ppp();
     // Both are whole pixels: rounding the width first keeps float noise from truncating a pixel away.
     let full = (area.width() * ppp).round();
     let w = if portrait {
-        full
+        // `U` at 100 %: the width cap never reduces it ([`ui_unit_px`](crate::metrics::ui_unit_px)).
+        let u100 = (m.dpi() / 6.0).round().max(1.0);
+        full * (m.u_px() / u100).min(1.0)
     } else {
         (RACK_W * m.u_px()).min(full)
     } / ppp;
@@ -381,7 +385,8 @@ pub fn card_gap(u: f32) -> f32 {
 /// The rack's frame, in device px: the header and its buttons.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chrome {
-    /// The rack covers the whole width: it is narrower than 20 U, or wider in a portrait window ([`rack_rect`]).
+    /// The rack takes the full-width chrome: its width is not the side rack's exact 20 U — the area is narrower
+    /// than that, or it is a portrait window's rack ([`rack_rect`]).
     pub full: bool,
     /// The header's and the card column's inset from each side: clamp(1.5 U − (20 U − R)/2, 0.5 U, 1.5 U).
     pub margin: f32,

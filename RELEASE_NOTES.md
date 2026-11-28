@@ -7,3 +7,6 @@ Honeydew 0.5.6 fixes Citrus volume envelopes silencing operators, adds built-in 
 - Version. The version shown in the app is now 0.5.6.
 - Drums. A kit from an .flm file now lists its slots in pad order, like FL Studio Mobile, not in the order the file stores them.
 - DW Sampler. A sampler whose sample is missing now stays silent, like FL Studio Mobile, instead of playing the bundled grand piano.
+- Drums. Notes in an .flm song now play the same samples as in FL Studio Mobile — hits follow the kit's records, not just pad order.
+- Drum mixer. Each strip now shows a clear stereo level meter under its controls, like FL Studio Mobile.
+- Rack. On a portrait screen the rack now follows the UI scale — full width at 100 %, narrower below it — instead of always covering the whole screen.

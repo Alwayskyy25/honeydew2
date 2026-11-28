@@ -1909,11 +1909,12 @@ fn a_send_on_the_master_is_dropped() {
 }
 
 #[test]
-fn drum_hits_follow_their_slot_when_the_pads_are_not_0_to_n() {
-    // Slots on pads 2, 0, 5 are listed in pad order — Pad 0, Pad 2, Pad 5 at positions 0, 1, 2 — and the
-    // hits keyed by pad follow them: the hit on pad 0 lands on position 0, the one on pad 2 on position 1.
-    // A hit on a pad without a slot (1 here, played by nothing) keeps playing nothing: below the slots it
-    // goes to 255, past them it stays.
+fn drum_hits_follow_their_slot_when_the_records_are_not_in_pad_order() {
+    // A file keys a hit by its slot's place in the record list, not by the pad the slot sits on. The
+    // records here sit on pads 2, 0, 5 (in that order) and are listed in pad order — Pad 0, Pad 2,
+    // Pad 5 at positions 0, 1, 2 — so the hit keyed 0 (the first record, on pad 2) lands on position 1,
+    // the one keyed 1 (on pad 0) on position 0, and the one keyed 2 (on pad 5) on position 2. A hit
+    // keyed past the records (7 here, played by nothing) keeps its key and stays past the slots.
     let slot = |w: &mut W, pad: f64, id: u32| {
         w.chunk(*b"SMPl", |w| {
             w.raw(&MAGIC_SL02)?;
@@ -1943,8 +1944,7 @@ fn drum_hits_follow_their_slot_when_the_pads_are_not_0_to_n() {
             w.u32(0x100)?;
             w.raw(&MAGIC_CH02)?;
             chhd(w, 1.0, 1, ["Drums 1", "", ""])?;
-            let hits =
-                [(0, 0), (1, 2), (2, 5), (3, 1), (4, 7)].map(|(pos, pad)| (pos, pad, 0x7fff, 0, 0));
+            let hits = [(0, 0), (1, 1), (2, 2), (3, 7)].map(|(pos, pad)| (pos, pad, 0x7fff, 0, 0));
             lane(w, 3, -1, -1, &|w| clip(w, 4.0, &hits))
         });
         Ok(())
@@ -1959,7 +1959,7 @@ fn drum_hits_follow_their_slot_when_the_pads_are_not_0_to_n() {
             _ => panic!("{e:?}"),
         })
         .collect();
-    assert_eq!(pads, [0, 1, 2, 255, 7]);
+    assert_eq!(pads, [1, 0, 2, 7]);
     assert_eq!(read(&write(&song).unwrap()).unwrap(), song);
 }
 

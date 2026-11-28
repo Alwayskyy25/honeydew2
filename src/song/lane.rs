@@ -333,7 +333,7 @@ pub enum Event {
         pan: u8,
         slide: bool,
     },
-    /// Drum-pattern lane. `pad` is the slot pad index; `value` is the per-hit Pitch, bipolar, 0x7FFF = centre, and
+    /// Drum-pattern lane. `pad` is the slot's position in its kit; `value` is the per-hit Pitch, bipolar, 0x7FFF = centre, and
     /// `repeat` the per-hit Repeat count (`EVN2` @18), 0..=8, 0 = a single hit. The drum editor's graph lane
     /// edits both; playback ignores them for now.
     Drum {

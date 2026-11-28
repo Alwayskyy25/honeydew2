@@ -330,8 +330,9 @@ struct RackRead {
     row: f64,
     /// `CHHD` base name: names the channel kind in our files ("<kind label> <id>").
     base_name: String,
-    /// The kit's `MAIN@4` pad indexes in slot order, when they are not 0, 1, 2 …: drum hits are re-keyed by them.
-    pads: Vec<f64>,
+    /// Where each of the kit's record keys lands in its slot list, when that is not the key itself:
+    /// drum hits are re-keyed by it.
+    hit_slots: Vec<usize>,
 }
 
 impl Reader {
@@ -523,7 +524,7 @@ impl Reader {
         channel.lanes.clear();
         let mut module_ids = Vec::new();
         let mut plugins = Vec::new();
-        let mut pads = Vec::new();
+        let mut hit_slots = Vec::new();
         for child in children {
             let child = child?;
             match &child.id {
@@ -550,10 +551,9 @@ impl Reader {
                 }
                 b"CCLK" => channel.file.cc_links = child.payload.to_vec(),
                 b"RSMP" => {
-                    let (kit, kit_pads) = self.kit(&child)?;
+                    let (kit, kit_hit_slots) = self.kit(&child)?;
                     channel.drum_kit = Some(kit);
-                    let identity = kit_pads.iter().enumerate().all(|(i, &pad)| pad == i as f64);
-                    pads = if identity { Vec::new() } else { kit_pads };
+                    hit_slots = kit_hit_slots;
                 }
                 b"RMOd" | b"RMOD" => {
                     let (id, module) = self.module(&child)?;
@@ -596,12 +596,12 @@ impl Reader {
             path: chunk.path.clone(),
             row: 0.0,
             base_name: String::new(),
-            pads,
+            hit_slots,
         })
     }
 
-    /// An `RSMP`, and its slots' `MAIN@4` pad indexes in slot order.
-    fn kit(&mut self, chunk: &Chunk<'_>) -> Result<(DrumKit, Vec<f64>), FlmError> {
+    /// An `RSMP`, and where each of its record keys lands in the kit's slot list (see the sort below).
+    fn kit(&mut self, chunk: &Chunk<'_>) -> Result<(DrumKit, Vec<usize>), FlmError> {
         let (prefix, children) = chunk.container_expect(PrefixKind::MagicU32, &[MAGIC_SM01])?;
         let Prefix::MagicU32(_, last_slot_id) = prefix else {
             return Err(FlmError::new(&chunk.path, FlmErrorKind::BadValue));
@@ -644,15 +644,35 @@ impl Reader {
         // whatever order the records are stored in (a sound added later sits on whatever pad was free, at
         // the end of the file). The kit lists them the same way (stable, so slots sharing a pad keep their
         // file order, and one with no pad goes last); each slot keeps its `MAIN` pad index in its file
-        // state, `settle_channel` re-keys the hits from it, and the writer stores the records back in
-        // slot-id order, so a save keeps the file's own layout.
-        slots.sort_by(|(a, _), (b, _)| {
+        // state, and the writer stores the records back in slot-id order, so a save keeps the file's own
+        // layout.
+        let mut indexed: Vec<(usize, f64, SamplerSlot)> = slots
+            .into_iter()
+            .enumerate()
+            .map(|(record, (pad, slot))| (record, pad, slot))
+            .collect();
+        indexed.sort_by(|(_, a, _), (_, b, _)| {
             let key = |pad: &f64| (pad < &0.0, *pad);
             key(a).partial_cmp(&key(b)).unwrap_or(Ordering::Equal)
         });
-        let (pads, slots) = slots.into_iter().unzip();
-        kit.slots = slots;
-        Ok((kit, pads))
+        // A file keys a drum hit by its slot's place in the record list, not by the pad the slot sits on:
+        // in a real file whose records sit on pads 2, 3, 4, 5, 6, 0, 1, … the hits keyed 0, 5, 6 play the
+        // records 0, 5, 6 (the sounds on pads 2, 0, 1), as FL Studio Mobile itself shows them. The map
+        // sends each record key to its slot's place in the pad-ordered list; it is empty when the two
+        // orders already agree, when a hit's key already is its slot's place.
+        let mut hit_slots = vec![0usize; indexed.len()];
+        for (position, (record, _, _)) in indexed.iter().enumerate() {
+            hit_slots[*record] = position;
+        }
+        kit.slots = indexed.into_iter().map(|(_, _, slot)| slot).collect();
+        if hit_slots
+            .iter()
+            .enumerate()
+            .all(|(key, &position)| key == position)
+        {
+            hit_slots.clear();
+        }
+        Ok((kit, hit_slots))
     }
 
     /// A slot and its `MAIN` pad index.
@@ -1388,29 +1408,25 @@ fn settle_channel(rack: &mut RackRead) {
     if channel.kind != ChannelKind::EffectTrack {
         channel.bus_id = -1;
     }
-    rekey_hits(channel, &rack.pads);
+    rekey_hits(channel, &rack.hit_slots);
 }
 
-/// Drum hits are keyed by `MAIN@4` pad index and the model's by slot position: with the kit's pads not
-/// 0, 1, 2 … (`pads`, in slot order; empty when they are), each hit takes its slot's position. A hit on a pad without
-/// a slot plays nothing in the app: it stays past the slots, or goes to pad 255 (past the slots of any kit of under
-/// 256) when its key is now a slot's position.
-fn rekey_hits(channel: &mut Channel, pads: &[f64]) {
-    if pads.is_empty() {
+/// Drum hits are keyed by their slot's place in the file's record list and the model's by slot
+/// position: `hit_slots` (a record key's slot position; empty when the orders agree) re-keys each hit
+/// to its slot. A hit keyed past the records keeps its key: it sits past the slots and plays nothing.
+fn rekey_hits(channel: &mut Channel, hit_slots: &[usize]) {
+    if hit_slots.is_empty() {
         return;
     }
-    let position = |key: u8| pads.iter().position(|&pad| pad == f64::from(key));
     let lanes = channel
         .lanes
         .iter_mut()
         .filter(|l| l.kind == LaneKind::Drums);
     for event in lanes.flat_map(|l| &mut l.clips).flat_map(|c| &mut c.events) {
-        if let Event::Drum { pad, .. } = event {
-            *pad = match position(*pad) {
-                Some(slot) => u8::try_from(slot).unwrap_or(u8::MAX),
-                None if usize::from(*pad) < pads.len() => u8::MAX,
-                None => *pad,
-            };
+        if let Event::Drum { pad, .. } = event
+            && let Some(&position) = hit_slots.get(usize::from(*pad))
+        {
+            *pad = u8::try_from(position).unwrap_or(u8::MAX);
         }
     }
 }

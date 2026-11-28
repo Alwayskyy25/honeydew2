@@ -185,8 +185,8 @@ fn an_imported_kit_lists_its_slots_in_pad_order() {
         [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
     );
     assert_eq!(kit.slots[2].name, "FL DNC Clap 1");
-    // The file's hits are keyed 0, 1, 2 (Kick, Snare, Clap by pad); in the model they sit on those same
-    // rows, and no hit names any other slot.
+    // The file's hits are keyed 0, 1, 2: the first three records (Kick, Snare, CH), which in pad order
+    // sit on rows 0, 1, 3; no hit names any other slot.
     let mut struck: Vec<usize> = Vec::new();
     for lane in channel
         .lanes
@@ -202,7 +202,7 @@ fn an_imported_kit_lists_its_slots_in_pad_order() {
     }
     struck.sort_unstable();
     struck.dedup();
-    assert_eq!(struck, [0, 1, 2]);
+    assert_eq!(struck, [0, 1, 3]);
     // And the song writes back byte for byte.
     assert_eq!(write(&song).unwrap(), OWNER);
 }

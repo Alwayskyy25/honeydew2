@@ -448,20 +448,30 @@ fn write_channel(writer: &mut ChunkWriter, channel: &Channel, row: usize) -> Res
             writer.chunk(*b"SEND", |writer| write_send(writer, send))?;
         }
     }
-    // The kit's pad indexes by slot position, for re-keying its drum hits back (`write_clip`); empty when
-    // they are 0, 1, 2 … in slot order, when the model's keys already are the file's.
-    let drum_pads: Vec<f64> = match &channel.drum_kit {
-        Some(kit) => kit.slots.iter().map(|slot| slot.file.pad_index).collect(),
+    // Each slot's place in the kit's record list, by slot position, for re-keying its drum hits back
+    // (`write_clip`): `write_kit` stores the records in slot-id order, so a slot's record place is its
+    // rank in that order. Empty when the ranks are 0, 1, 2 … in slot order, when the model's keys
+    // already are the file's.
+    let drum_keys: Vec<usize> = match &channel.drum_kit {
+        Some(kit) => {
+            let mut by_id: Vec<usize> = (0..kit.slots.len()).collect();
+            by_id.sort_by_key(|&position| kit.slots[position].file.id);
+            let mut keys = vec![0usize; kit.slots.len()];
+            for (rank, position) in by_id.into_iter().enumerate() {
+                keys[position] = rank;
+            }
+            keys
+        }
         None => Vec::new(),
     };
-    let drum_pads: &[f64] = if drum_pads
+    let drum_keys: &[usize] = if drum_keys
         .iter()
         .enumerate()
-        .all(|(index, &pad)| pad == index as f64)
+        .all(|(position, &key)| key == position)
     {
         &[]
     } else {
-        &drum_pads
+        &drum_keys
     };
     // Automation lanes after the others, in file order. The master's tempo lane (Honeydew's own) is an `HDTk`, a
     // `TRKH` by another name, which a reader that does not know it skips as an unknown chunk.
@@ -470,7 +480,7 @@ fn write_channel(writer: &mut ChunkWriter, channel: &Channel, row: usize) -> Res
     for lane in lanes {
         let tempo = channel.kind == ChannelKind::Master && lane.target == Some(TEMPO_TARGET);
         let id = if tempo { *b"HDTk" } else { *b"TRKH" };
-        writer.chunk(id, |writer| write_lane(writer, lane, drum_pads))?;
+        writer.chunk(id, |writer| write_lane(writer, lane, drum_keys))?;
     }
     // Honeydew's own MIDI input, only when set (`flm::read` reads it back; FL Studio Mobile skips it): `vstr32` the
     // device ("" for All) and `u32` the MIDI channel 1…16 (0 for All).
@@ -531,7 +541,7 @@ fn desc_target(lane: &Lane) -> (i32, i32) {
     }
 }
 
-fn write_lane(writer: &mut ChunkWriter, lane: &Lane, drum_pads: &[f64]) -> Result<(), FlmError> {
+fn write_lane(writer: &mut ChunkWriter, lane: &Lane, drum_keys: &[usize]) -> Result<(), FlmError> {
     let (instance, param) = desc_target(lane);
     writer.chunk(*b"DESc", |writer| {
         writer.u8(lane.kind as u8)?;
@@ -554,7 +564,7 @@ fn write_lane(writer: &mut ChunkWriter, lane: &Lane, drum_pads: &[f64]) -> Resul
     clips.sort_by_key(|clip| clip.start_tick);
     for clip in clips {
         writer.chunk(*b"CLIP", |writer| {
-            write_clip(writer, clip, lane.kind, param, drum_pads)
+            write_clip(writer, clip, lane.kind, param, drum_keys)
         })?;
     }
     // A hidden track (Honeydew's own) holds an empty `HDHd`, which a reader that does not know it skips.
@@ -573,7 +583,7 @@ fn write_clip(
     clip: &Clip,
     kind: LaneKind,
     param: i32,
-    drum_pads: &[f64],
+    drum_keys: &[usize],
 ) -> Result<(), FlmError> {
     writer.u32(clip.start_tick)?;
     writer.raw(&MAGIC_CL02)?;
@@ -596,12 +606,12 @@ fn write_clip(
         writer.chunk(*b"CLSm", |writer| write_slot(writer, slot, None))?;
     }
     writer.chunk(*b"EVN2", |writer| {
-        // A drum lane's hits are keyed by slot position in the model and by pad index in the file:
-        // `drum_pads` (a slot's pad index by its position, empty when they are 0, 1, 2 …) keys them back,
-        // for the kept-bytes check and the encode alike.
+        // A drum lane's hits are keyed by slot position in the model and by the slot's place in the
+        // file's record list in the file: `drum_keys` (that place by slot position, empty when they
+        // are 0, 1, 2 …) keys them back, for the kept-bytes check and the encode alike.
         let rekeyed;
-        let events: &[Event] = if kind == LaneKind::Drums && !drum_pads.is_empty() {
-            rekeyed = unrekey_hits(&clip.events, drum_pads);
+        let events: &[Event] = if kind == LaneKind::Drums && !drum_keys.is_empty() {
+            rekeyed = unrekey_hits(&clip.events, drum_keys);
             &rekeyed
         } else {
             &clip.events
@@ -652,20 +662,18 @@ fn automation_key(param: i32) -> i16 {
     param.saturating_add(1).clamp(-max, max) as i16
 }
 
-/// The reader's re-key (`flm::read::rekey_hits`), backwards: a drum hit's key from its slot's position to
-/// the pad index the slot sits on (`pads`, by position). A hit past the slots, or on a slot whose pad index
-/// is no whole pad number in range, keeps its key.
-fn unrekey_hits(events: &[Event], pads: &[f64]) -> Vec<Event> {
+/// The reader's re-key (`flm::read::rekey_hits`), backwards: a drum hit's key from its slot's position
+/// to the slot's place in the file's record list (`keys`, by position). A hit past the slots keeps its
+/// key.
+fn unrekey_hits(events: &[Event], keys: &[usize]) -> Vec<Event> {
     events
         .iter()
         .map(|event| {
             let mut event = *event;
             if let Event::Drum { pad, .. } = &mut event
-                && let Some(&index) = pads.get(usize::from(*pad))
-                && index.fract() == 0.0
-                && (0.0..=255.0).contains(&index)
+                && let Some(&key) = keys.get(usize::from(*pad))
             {
-                *pad = index as u8;
+                *pad = u8::try_from(key).unwrap_or(u8::MAX);
             }
             event
         })
