@@ -567,11 +567,6 @@ impl SampleCache {
         self.samples.get(key)?.clone()
     }
 
-    /// Whether a load met the sample or DW program `key` and found it missing.
-    pub(crate) fn is_missing(&self, key: &SampleKey) -> bool {
-        matches!(self.samples.get(key), Some(None)) || matches!(self.programs.get(key), Some(None))
-    }
-
     /// Some sample decoded: of a worker's cache, whether a pick will sound.
     pub fn decoded_any(&self) -> bool {
         self.samples.values().any(Option::is_some) || !self.streamed.is_empty()
@@ -633,7 +628,7 @@ impl SampleCache {
     }
 
     /// The samples, DW programs, SoundFonts and Custom shapes that failed, for the load message "Some audio files were
-    /// missing". The song's own: not our stand-in for a missing sampler ([`crate::audio_engine::samples::stand_in`]).
+    /// missing".
     pub fn missing(&self) -> impl Iterator<Item = &SampleKey> {
         let samples = self.samples.iter().filter(|(_, s)| s.is_none());
         let programs = self.programs.iter().filter(|(_, p)| p.is_none());
@@ -641,27 +636,20 @@ impl SampleCache {
         let sfz_samples = self.sfz_missing.values().flatten();
         let renders = self.stretched.iter().filter(|(_, r)| r.is_none());
         let tables = self.shapes.iter().filter(|(_, w)| w.is_none());
-        let stand_in = SampleKey::File(crate::audio_engine::samples::stand_in());
         (samples.map(|(key, _)| key))
             .chain(renders.map(|(key, _)| &key.0))
             .chain(tables.map(|(key, _)| key))
             .chain(programs.map(|(key, _)| key))
             .chain(fonts.map(|(key, _)| key))
             .chain(sfz_samples)
-            .filter(move |&key| *key != stand_in)
     }
 
     /// How many samples, DW programs and SoundFonts the loads met, the missing ones too: the content check's count of
-    /// what a song references. An audio file a DW Sampler plays is a sample and a program of one zone: once. Our
-    /// stand-in for a missing sampler and its zones are not the song's.
+    /// what a song references. An audio file a DW Sampler plays is a sample and a program of one zone: once.
     #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn met(&self) -> usize {
-        let stand_in = SampleKey::File(crate::audio_engine::samples::stand_in());
-        let zones = self.programs.get(&stand_in).cloned().flatten();
-        let ours =
-            |k: &SampleKey| *k == stand_in || zones.iter().any(|z| z.iter().any(|z| z.1 == *k));
-        let samples = (self.samples.keys().chain(self.streamed.keys())).filter(|k| !ours(k));
-        let programs = (self.programs.keys()).filter(|k| !self.samples.contains_key(k) && !ours(k));
+        let samples = self.samples.keys().chain(self.streamed.keys());
+        let programs = (self.programs.keys()).filter(|k| !self.samples.contains_key(k));
         samples.count() + programs.count() + self.soundfonts.len()
     }
 
@@ -750,11 +738,6 @@ impl<'a> Refs<'a> {
 }
 
 impl Refs<'_> {
-    /// The cache as loaded so far.
-    pub(crate) fn cache(&self) -> &SampleCache {
-        self.cache
-    }
-
     /// The song plays `key`. It is decoded now unless the cache already has it, or knows it is missing. A sample
     /// that does not fit what is left of the cache's byte budget ([`MAX_DECODED_BYTES`]) is missing.
     pub fn add(&mut self, key: SampleKey) {
@@ -2191,24 +2174,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_dw_sampler_whose_files_are_missing_plays_the_stand_in_grand() {
-        use crate::audio_engine::samples::{sampler_zones, stand_in};
-        // A song from another device: its sampler's sample stayed there.
-        let grand = stand_in();
-        let read = |path: &ContentPath| (*path == grand).then(|| wav(&[1, 2, 3]));
+    fn a_dw_sampler_whose_files_are_missing_plays_nothing() {
+        use crate::audio_engine::samples::sampler_zones;
+        // A song from another device: its sampler's sample stayed there. FL Studio Mobile names the
+        // sample and stays silent; no substitute sound plays in its place.
         let song = dw_song(dw_cstm(b"@L@\0My Samples/Gone.wav"));
-        // The web's download plan: nothing is missing before a load, so no stand-in.
-        assert!(!SampleCache::referenced(&song).contains(&SampleKey::File(grand.clone())));
         let mut cache = SampleCache::default();
-        cache.load(&song, &read);
+        cache.load(&song, &|_| None);
         let blob = song.channels[1].rack.modules[0].file.custom_data.clone();
         let cstm = honeydew_audio::dwp::Cstm::read(blob.as_deref().unwrap());
-        let zones = sampler_zones(&cstm, &cache);
-        assert_eq!(zones.len(), 1);
-        assert_eq!(zones[0].1.frames(), 3);
-        // The next load keeps it, read no more.
+        assert!(sampler_zones(&cstm, &cache).is_empty());
+        assert_eq!(
+            cache.missing().cloned().collect::<Vec<_>>(),
+            [SampleKey::File(user("My Samples/Gone.wav"))]
+        );
+        // The next load keeps it so.
         cache.load(&song, &|_| None);
-        assert_eq!(sampler_zones(&cstm, &cache).len(), 1);
+        assert!(sampler_zones(&cstm, &cache).is_empty());
     }
 
     #[test]

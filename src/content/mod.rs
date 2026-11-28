@@ -49,8 +49,7 @@ pub const SHAPES: &str = "Shapes";
 pub const SAMPLES: &str = "Samples";
 pub const CHORD_SETS: &str = "Chord Sets";
 pub const TEMPLATES: &str = "Templates";
-/// Our bundled grand: what a new DW Sampler loads where the content has no `Close Grand`, and what one whose files are
-/// all missing plays ([`crate::audio_engine::samples::stand_in`]).
+/// Our bundled grand: what a new DW Sampler loads where the content has no `Close Grand`.
 pub const GRAND_PIANO: &str = "Presets/DW Sampler/Piano/Grand Piano.dwp";
 
 /// One factory file: its path below [`ROOT`], `/`-separated (`Drumsets/Dust Kit.tmpl`), and what makes its bytes, run

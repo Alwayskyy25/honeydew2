@@ -662,12 +662,13 @@ fn strip_params_address_their_slot_by_its_id_through_clone_and_delete() {
 
 #[test]
 fn the_owners_kit_addresses_each_slot_by_its_id_not_its_pad() {
-    // 4.10.19 lists the kit's slots in file order (ids 1..11); the Clap, slot 8, sits on pad 2 but is
-    // listed eighth. A strip drag on a row addresses its slot by id (−8 for the Clap's row, −3 here).
+    // The file stores the kit's slots in add order (ids 1..11); the Clap, slot 8, sits on pad 2.
+    // FL Studio Mobile lists a kit in pad order, and so does the import: the Clap is listed third.
+    // A strip drag on a row addresses its slot by id (−8 for the Clap's row).
     let (mut rig, _) = fresh_song();
     let slots = |rig: &Rig| rig.app.song.channels[2].drum_kit.clone().unwrap().slots;
     let ids: Vec<u32> = slots(&rig).iter().map(|s| s.file.id).collect();
-    assert_eq!(ids, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    assert_eq!(ids, [1, 2, 8, 3, 4, 5, 6, 7, 9, 10, 11]);
     rig.edit(2);
     rig.slide_split();
     rig.fold_mixer();
@@ -680,7 +681,7 @@ fn the_owners_kit_addresses_each_slot_by_its_id_not_its_pad() {
     let log = rig.take();
     assert_eq!(
         log.last(),
-        Some(&format!("SetParam 2 -3 0 {value:.3}")),
+        Some(&format!("SetParam 2 -8 0 {value:.3}")),
         "{log:?}"
     );
 }

@@ -2564,14 +2564,13 @@ fn a_zone_the_worker_found_missing_is_listed_and_not_read_again_at_the_build() {
     let samples = &mut rig.app.audio.samples;
     assert!(samples.program(&keys).is_some());
     assert_eq!(samples.missing().collect::<Vec<_>>(), [&c4]);
-    // The build reads only the grand the now silent sampler plays instead.
+    // The build reads nothing for the sampler: its zone is missing and no stand-in plays in its place.
     let reads = std::cell::RefCell::new(Vec::new());
     samples.load(&rig.app.song, &|path| {
         reads.borrow_mut().push(path.clone());
         None
     });
-    let stand_in = crate::audio_engine::samples::stand_in();
-    assert_eq!(reads.into_inner(), [stand_in], "the build read a file");
+    assert_eq!(reads.into_inner(), [], "the build read a file");
     assert_eq!(samples.missing().collect::<Vec<_>>(), [&c4]);
 }
 

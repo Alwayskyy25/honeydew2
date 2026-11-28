@@ -150,12 +150,13 @@ fn the_owners_fresh_song_round_trips() {
     assert!(fresh.is_empty(), "{fresh:#?}");
 }
 
-/// A kit FL Studio Mobile saved lists its slots in file order, which need not be pad order: in the owner's
-/// kit the Clap was added last (slot id 8) onto the free pad 2. The import keeps that order — the Clap is
-/// the eighth slot, on pad 2 — instead of sorting the slots by pad, and the hits the file keys by pad
-/// (0, 1, 2 here) land on the slots that own those pads.
+/// A kit FL Studio Mobile saved stores its records in the order its slots were added, which need not be
+/// pad order: in the owner's kit the Clap was added last (slot id 8) onto the free pad 2. FL Studio
+/// Mobile lists a kit in pad order — its step sequencer rows follow the pads — and the import does the
+/// same: the Clap is the third slot, and the hits the file keys by pad (0, 1, 2 here) land on those same
+/// rows. The records still write back in slot-id order, byte for byte.
 #[test]
-fn an_imported_kit_keeps_the_files_slot_order() {
+fn an_imported_kit_lists_its_slots_in_pad_order() {
     let song = read(OWNER).unwrap();
     let channel = (song.channels.iter())
         .find(|channel| channel.name == "Drums 2")
@@ -167,12 +168,12 @@ fn an_imported_kit_keeps_the_files_slot_order() {
         [
             "FL 808 Kick",
             "FL 808 Snare",
+            "FL DNC Clap 1",
             "FL 808 CH",
             "FL 808 OH",
             "FL 808 OH",
             "HouseGen Crash 02",
             "FL 808 Crash",
-            "FL DNC Clap 1",
             "FL 808 Clav",
             "FL 808 Conga",
             "FL 808 Tom",
@@ -181,11 +182,11 @@ fn an_imported_kit_keeps_the_files_slot_order() {
     let pads: Vec<f64> = kit.slots.iter().map(|slot| slot.file.pad_index).collect();
     assert_eq!(
         pads,
-        [0.0, 1.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2.0, 8.0, 9.0, 10.0]
+        [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
     );
-    assert_eq!(kit.slots[7].name, "FL DNC Clap 1");
-    // The file's hits are keyed 0, 1, 2 (Kick, Snare, Clap by pad); in the model the Clap's hits sit on
-    // its position, 7, and no hit names any other slot.
+    assert_eq!(kit.slots[2].name, "FL DNC Clap 1");
+    // The file's hits are keyed 0, 1, 2 (Kick, Snare, Clap by pad); in the model they sit on those same
+    // rows, and no hit names any other slot.
     let mut struck: Vec<usize> = Vec::new();
     for lane in channel
         .lanes
@@ -201,7 +202,7 @@ fn an_imported_kit_keeps_the_files_slot_order() {
     }
     struck.sort_unstable();
     struck.dedup();
-    assert_eq!(struck, [0, 1, 7]);
+    assert_eq!(struck, [0, 1, 2]);
     // And the song writes back byte for byte.
     assert_eq!(write(&song).unwrap(), OWNER);
 }

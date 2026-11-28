@@ -5,3 +5,5 @@ Honeydew 0.5.6 fixes Citrus volume envelopes silencing operators, adds built-in 
 - File picker. "My Files" shows the full user library — Audio, My MIDI, My Presets, My Racks, My Recordings, My Samples, My Songs, My SoundFonts, My Tracks — like FL Studio Mobile, not just My Samples.
 - Tesla. Convert to score can export to the sample library.
 - Version. The version shown in the app is now 0.5.6.
+- Drums. A kit from an .flm file now lists its slots in pad order, like FL Studio Mobile, not in the order the file stores them.
+- DW Sampler. A sampler whose sample is missing now stays silent, like FL Studio Mobile, instead of playing the bundled grand piano.

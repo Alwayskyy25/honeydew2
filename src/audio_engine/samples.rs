@@ -3,10 +3,9 @@
 //! sample it plays (`refs.add_slot` for a sampler slot). It can call `refs.read` to open a file that names further
 //! samples, such as a `.dwp`.
 
-use crate::flm::chunk::{ChunkIter, ContentPath, ContentRoot, Cursor};
+use crate::flm::chunk::{ChunkIter, ContentPath, Cursor};
 use crate::flm::sf2d::Sf2d;
 use crate::panels::inst::three_osc;
-use crate::project_files::BUILT_IN;
 use crate::sample_cache::{Refs, SampleCache, SampleKey};
 use crate::song::{Channel, LaneKind, ModuleInstance, Song};
 use honeydew_audio::dwp::{Cstm, Zone};
@@ -61,60 +60,14 @@ pub(crate) fn dw_module(module: &ModuleInstance, refs: &mut Refs) {
     if let Some(path) = program_path(&cstm) {
         refs.add_program(&path);
     }
-    if silent(&cstm, refs.cache()) {
-        refs.add_program(&stand_in());
-    }
-}
-
-/// What a DW Sampler whose files are all missing plays instead (a song from another device, its samples left there):
-/// our bundled grand piano. The song keeps naming its own files.
-pub(crate) fn stand_in() -> ContentPath {
-    ContentPath::Shorthand {
-        root: ContentRoot::App,
-        relative: format!("{BUILT_IN}/{}", crate::content::GRAND_PIANO),
-    }
-}
-
-/// A DW Sampler of `song` names a file in the user folder: on the web, which has only this session's copies there, it
-/// is likely missing and plays [`stand_in`], which downloads with the song (15 MB: not for every factory program).
-pub(crate) fn may_stand_in(song: &Song) -> bool {
-    let modules = song.channels.iter().flat_map(|c| &c.rack.modules);
-    let blobs = modules
-        .filter(|m| m.type_id == 1)
-        .filter_map(|m| m.file.custom_data.as_deref());
-    blobs.map(Cstm::read).any(|cstm| {
-        let program = cstm.program.as_ref().map(|program| program.path);
-        let paths = program
-            .into_iter()
-            .chain(cstm.zones.iter().map(|(path, _)| *path));
-        paths.filter_map(dw_path).any(|path| {
-            matches!(
-                path,
-                ContentPath::Shorthand {
-                    root: ContentRoot::User,
-                    ..
-                }
-            )
-        })
-    })
 }
 
 /// The zones DW Sampler `cstm` plays, each with its decoded sample: its program's (`PATh`/`PATH`) or its `ZONE`s, never
-/// both ([`Cstm::read`]); a zone whose sample is missing is dropped. One that plays nothing of its own as its files are
-/// missing ([`silent`]) plays [`stand_in`]'s.
+/// both ([`Cstm::read`]); a zone whose sample is missing is dropped. A sampler whose files are all missing
+/// plays nothing — FL Studio Mobile names the sample and stays silent, and so does this (no substitute
+/// sound is played in its place).
 pub(crate) fn sampler_zones(cstm: &Cstm, samples: &SampleCache) -> Vec<(Zone, Pcm)> {
-    match own_zones(cstm, samples) {
-        zones if zones.is_empty() && missing(cstm, samples) => {
-            program_zones(&stand_in(), samples, None)
-        }
-        zones => zones,
-    }
-}
-
-/// The sampler plays nothing of its own, as a load found its files missing. Nothing is missing before a load has met
-/// them (the web's download plan), so only a song that needs it loads [`stand_in`].
-fn silent(cstm: &Cstm, samples: &SampleCache) -> bool {
-    own_zones(cstm, samples).is_empty() && missing(cstm, samples)
+    own_zones(cstm, samples)
 }
 
 fn own_zones(cstm: &Cstm, samples: &SampleCache) -> Vec<(Zone, Pcm)> {
@@ -145,24 +98,6 @@ pub(crate) fn rooted(zone: Zone, key: &SampleKey, path: &ContentPath, root: Opti
     match (root, key) {
         (Some(root), SampleKey::File(file)) if file == path => Zone { root, ..zone },
         _ => zone,
-    }
-}
-
-/// A file the sampler names (its program, the program's zones, or its own `ZONE`s) is missing.
-fn missing(cstm: &Cstm, samples: &SampleCache) -> bool {
-    match program_path(cstm) {
-        Some(path) => {
-            let zones = samples.program(&path);
-            let mut keys = zones
-                .iter()
-                .flat_map(|zones| zones.iter())
-                .map(|zone| &zone.1);
-            samples.is_missing(&SampleKey::File(path.clone()))
-                || keys.any(|key| samples.is_missing(key))
-        }
-        None => (cstm.zones.iter())
-            .filter_map(|(path, _)| dw_path(path))
-            .any(|path| samples.is_missing(&SampleKey::File(path))),
     }
 }
 

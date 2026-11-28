@@ -247,9 +247,12 @@ fn write_modules(writer: &mut ChunkWriter, modules: &[ModuleInstance]) -> Result
 /// A kit's `PADS`, its slots and its unknown chunks: what follows the `RSMP` prefix, or the `.tmpl` magic.
 fn write_kit(writer: &mut ChunkWriter, kit: &DrumKit) -> Result<(), FlmError> {
     writer.chunk(*b"PADS", |writer| writer.raw(&kit.file.pads))?;
-    // Each slot on the pad its `MAIN`@4 names (kept in its file state), in the kit's own order: the order
-    // a reader lists the kit in, so a kit's slots stay where they are across a save.
-    for slot in &kit.slots {
+    // Each slot on the pad its `MAIN`@4 names (kept in its file state). The records go in slot-id
+    // order — the order FL Studio Mobile stores a kit's records in — while the kit itself lists its
+    // slots in pad order, so a save keeps the file's own layout.
+    let mut by_id: Vec<&SamplerSlot> = kit.slots.iter().collect();
+    by_id.sort_by_key(|slot| slot.file.id);
+    for slot in by_id {
         writer.chunk(*b"SMPl", |writer| {
             write_slot(writer, slot, Some(slot.file.pad_index))
         })?;

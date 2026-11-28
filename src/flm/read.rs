@@ -640,9 +640,16 @@ impl Reader {
             // rewritten).
             slot.file.stretch_mode = u8::from(slot.file.stretch_ratio != 1.0);
         }
-        // The kit keeps the file's slot order: FL Studio Mobile lists a kit's slots as they are stored,
-        // which need not be pad order (a sound added later sits on whatever pad was free). Each slot keeps
-        // its `MAIN` pad index in its file state; `settle_channel` re-keys the hits from it.
+        // FL Studio Mobile lists a kit's slots in pad order — its step sequencer rows follow the pads —
+        // whatever order the records are stored in (a sound added later sits on whatever pad was free, at
+        // the end of the file). The kit lists them the same way (stable, so slots sharing a pad keep their
+        // file order, and one with no pad goes last); each slot keeps its `MAIN` pad index in its file
+        // state, `settle_channel` re-keys the hits from it, and the writer stores the records back in
+        // slot-id order, so a save keeps the file's own layout.
+        slots.sort_by(|(a, _), (b, _)| {
+            let key = |pad: &f64| (pad < &0.0, *pad);
+            key(a).partial_cmp(&key(b)).unwrap_or(Ordering::Equal)
+        });
         let (pads, slots) = slots.into_iter().unzip();
         kit.slots = slots;
         Ok((kit, pads))
