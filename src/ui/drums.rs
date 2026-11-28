@@ -646,6 +646,7 @@ pub fn header_names(
 /// press or parameter menu pick goes to [`DrumsState::touch`]; `links` are the channel's MIDI CC links (its `CCLK`),
 /// which enable a linked param's `Unlink from MIDI CC`. On the Mix page each strip also draws a level meter under
 /// its Level slider, from `levels` (per slot, its output peaks L and R).
+#[allow(clippy::too_many_arguments)]
 pub fn show_strips(
     ui: &mut Ui,
     cx: &UiCtx,
