@@ -1933,6 +1933,10 @@ impl Instrument for SoundFontPlayer {
         self.held = [None; 128];
     }
 
+    fn active(&self) -> bool {
+        self.voices.iter().any(|voice| voice.on)
+    }
+
     fn reset(&mut self) {
         for (slot, voice) in self.voices.iter_mut().enumerate() {
             voice.on = false;

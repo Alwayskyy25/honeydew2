@@ -896,6 +896,11 @@ impl MiniSynth {
         }
     }
 
+    /// Whether any voice is sounding or releasing.
+    pub fn active(&self) -> bool {
+        self.voices.iter().any(|voice| voice.busy)
+    }
+
     /// Silences at once, as a new instance: voices, glide memory, held keys, effect tails and phases; params,
     /// tempo, bend and the mod wheel are kept.
     pub fn reset(&mut self) {

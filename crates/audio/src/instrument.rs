@@ -46,6 +46,13 @@ pub trait Instrument: Send {
     /// and `velocity`, added to its key, note pan and velocity, without smoothing; a newly launched voice starts at 0.
     /// The default ignores slides, as the Transistor Bass and Slicer do.
     fn set_slide(&mut self, _pitch: f32, _pan: f32, _velocity: f32) {}
+    /// Whether any voice is sounding, or could sound without a new note-on (a one-shot still playing out, a
+    /// release still running): the host sleeps a channel's whole rack while every module on it is inactive
+    /// and the channel has been silent, so an instrument that cannot say must keep the default, `true` —
+    /// it then never lets its channel sleep.
+    fn active(&self) -> bool {
+        true
+    }
     /// Whether the voices freeze while Enable is off (not rendered, not advanced) and resume when it is back on:
     /// Slicer, 3x Osc and SoundFont Player. The default, false, resets the instrument at once on the On→Off edge:
     /// MiniSynth, GMSynth, DW Sampler, Transistor Bass and SuperSaw.
@@ -74,6 +81,10 @@ impl Instrument for MiniSynth {
 
     fn all_notes_off(&mut self) {
         MiniSynth::all_notes_off(self);
+    }
+
+    fn active(&self) -> bool {
+        MiniSynth::active(self)
     }
 
     fn reset(&mut self) {
@@ -242,6 +253,13 @@ impl InstrumentModule {
     /// The last block's peaks of the instrument's own output (no gain reduction).
     pub fn meter(&self) -> MeterSnapshot {
         self.meter
+    }
+
+    /// Whether the module can make sound without a new note: it runs (Enable on, Mix ≠ 0) and its
+    /// instrument is [active](Instrument::active). A disabled module sounds nothing whatever its
+    /// voices hold — a freezing one resumes them when it is back on, as it does after a sleep.
+    pub fn active(&self) -> bool {
+        self.common.runs(self.enabled) && self.instrument.active()
     }
 }
 

@@ -568,6 +568,10 @@ impl Instrument for SuperSaw {
         self.release_all();
     }
 
+    fn active(&self) -> bool {
+        self.voices.iter().any(|voice| !voice.amp.is_idle())
+    }
+
     fn reset(&mut self) {
         self.voices = std::array::from_fn(Voice::new);
         self.held = [None; 128];

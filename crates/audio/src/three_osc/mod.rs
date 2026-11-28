@@ -638,6 +638,10 @@ impl Instrument for ThreeOsc {
         self.all_off = true;
     }
 
+    fn active(&self) -> bool {
+        self.pool.voices.iter().any(|voice| voice.active)
+    }
+
     fn reset(&mut self) {
         for v in &mut self.pool.voices {
             v.active = false;

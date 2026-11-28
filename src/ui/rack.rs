@@ -35,7 +35,7 @@
 //! control` and `Clear target`, which set the param it drives ([`retarget`], a final song edit and so an undo step); its
 //! header shows the target's name.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{
     Align2, Area, Color32, CornerRadius, Event, FontId, Id, Mesh, Order, Painter, Pos2, Rangef,
@@ -89,10 +89,9 @@ const CARD_GAP: f32 = 0.35;
 const CARD_HEADER: f32 = 1.5;
 /// A card's corners.
 const CARD_CORNER: f32 = 0.4;
-/// The side rack's collapse tab: its size, its inset from the rack's left edge and its outline ring in device px, just
-/// outside the pill.
+/// The side rack's collapse tab: its size and its outline ring in device px. The tab straddles the rack's left
+/// edge, centred on the edge line, as FL Studio Mobile's does.
 const COLLAPSE: Vec2 = vec2(1.0, 1.6);
-const COLLAPSE_INSET: f32 = 0.25;
 const COLLAPSE_RING_PX: f32 = 2.0;
 /// The collapse tab's icon size factor.
 const COLLAPSE_ICON: f32 = 0.6;
@@ -437,14 +436,12 @@ impl Chrome {
     }
 }
 
-/// A side rack's collapse tab on `rack` at `u` per U (device px): 1 × 1.6 U, 0.25 U in from the rack's left edge,
-/// centred on the rack tab's height `tab_y` ([`crate::ui::main_screen::rack_tab_pill`]).
+/// A side rack's collapse tab on `rack` at `u` per U (device px): 1 × 1.6 U, centred on the rack's left edge —
+/// on its edge line, as FL Studio Mobile's is — at the rack tab's height `tab_y`
+/// ([`crate::ui::main_screen::rack_tab_pill`]).
 pub fn collapse_tab(rack: Rect, u: f32, tab_y: f32) -> Rect {
     let size = COLLAPSE * u;
-    Rect::from_center_size(
-        pos2(rack.left() + COLLAPSE_INSET * u + size.x / 2.0, tab_y),
-        size,
-    )
+    Rect::from_center_size(pos2(rack.left(), tab_y), size)
 }
 
 /// The y range of `rack` (px) in points.
@@ -1343,6 +1340,9 @@ pub struct RackPanel {
     /// The patches of the SoundFonts the SoundFont Players name, as read: the host reads each one the first time a
     /// rack shows it ([`soundfont_player::wire`] shows one it has not read yet as loading).
     pub soundfonts: SoundFonts,
+    /// The channel's DW Samplers whose samples are all missing, by instance id: their cards read "Sample not
+    /// found or corrupted :(" instead of the panel, as FL Studio Mobile's do. The host sets it each frame.
+    pub dw_missing: HashSet<i32>,
     /// The channels the rack's sends can name: the host sets it each frame ([`send_targets`]).
     pub targets: Vec<SendTarget>,
     /// The recent control, by channel id, for a Modulator's `Modulate recent control`, and the names of the rack's
@@ -1510,6 +1510,7 @@ impl RackPanel {
                 note_edit: self.note_edit,
                 meters: std::mem::take(&mut self.meters),
                 soundfonts: std::mem::take(&mut self.soundfonts),
+                dw_missing: std::mem::take(&mut self.dw_missing),
                 targets: std::mem::take(&mut self.targets),
                 covered: self.covered,
                 multitrack: self.multitrack,
@@ -2535,6 +2536,18 @@ impl RackPanel {
         if module.type_id == slicer::TYPE_ID {
             slicer::wire(module, state);
         }
+        // A DW Sampler whose samples are all missing reads "Sample not found or corrupted :(" where
+        // its controls would be, as FL Studio Mobile's does, and takes no edits.
+        if self.dw_missing.contains(&id) {
+            ui.painter().text(
+                content.center(),
+                Align2::CENTER_CENTER,
+                "Sample not found or corrupted :(",
+                cx.m.font_id(FontSize::Pt14),
+                cx.theme.colors.text.to_color32(),
+            );
+            return;
+        }
         let before = (state.settings.clone(), state.tab);
         // The module's meter for the panel's draws, silence when the audio has none for it; none without
         // a running stream, so the draws rest and stop polling.
@@ -2703,12 +2716,18 @@ impl RackPanel {
                 1.0
             };
             let pill = Rect::from_center_size(tab.center(), tab.size() * grown);
-            // The ring: a channel-colour pill 2 px larger on every side, under the pill's own full-size fill.
-            let ring = pill.expand(COLLAPSE_RING_PX / ppp);
-            painter.rect_filled(ring, ring.width() / 2.0, ink);
-            painter.rect_filled(pill, pill.width() / 2.0, contrast);
+            // FL Studio Mobile's tab: a hollow pill, only its channel-colour outline over what is
+            // beneath, the `›` in the same colour. It straddles the edge, so it paints past the
+            // rack's clip, as the shadow does.
+            let over = painter.with_clip_rect(ui.ctx().content_rect());
+            over.rect_stroke(
+                pill,
+                pill.width() / 2.0,
+                Stroke::new(COLLAPSE_RING_PX / ppp, ink),
+                StrokeKind::Inside,
+            );
             // Icon 10, the small `›`.
-            draw_icon(&painter, pill, IconId::Collapse, ink, COLLAPSE_ICON, m);
+            draw_icon(&over, pill, IconId::Collapse, ink, COLLAPSE_ICON, m);
             close |= response.clicked();
         }
         // A tap in the left margin, under the header, closes the rack too.

@@ -159,6 +159,8 @@ fn a_tagged_answer_reaches_its_own_asker_only() {
     ));
     rig.frame(vec![]);
     rig.click_id(message_item(3));
+    // The loading screen's frame: the picked song replaces the current one on the next.
+    rig.frame(vec![]);
     assert_eq!(rig.app.song.channels.len(), 3);
     assert_eq!(rig.app.nav.take_answer("other"), Some(false));
 }

@@ -535,6 +535,10 @@ impl Instrument for TransistorBass {
         }
     }
 
+    fn active(&self) -> bool {
+        self.rendering
+    }
+
     fn reset(&mut self) {
         let params = self.params;
         *self = Self::new(self.fs);

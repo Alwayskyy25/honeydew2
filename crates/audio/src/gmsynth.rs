@@ -998,6 +998,10 @@ impl Instrument for GmSynth {
         }
     }
 
+    fn active(&self) -> bool {
+        self.voices.iter().any(|voice| voice.sounding())
+    }
+
     fn reset(&mut self) {
         self.voices = [Voice::default(); VOICES];
         for (seed, voice) in (1..).zip(&mut self.voices) {

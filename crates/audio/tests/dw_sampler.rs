@@ -672,12 +672,15 @@ fn reverse_loop_legato_and_mono_are_on_at_any_nonzero_value() {
 }
 
 #[test]
-fn reading_interpolates_linearly_between_frames() {
-    // At half the device rate the root key reads half a frame per frame.
+fn reading_interpolates_cubically_between_frames() {
+    // At half the device rate the root key reads half a frame per frame. The curve is
+    // Catmull-Rom: at 0.5 the first frame's missing neighbour is held (frame 0 twice),
+    // bending the read to 0.0004375 where a straight line would give 0.0005; deeper in,
+    // a straight ramp reads exact, as it does on the curve.
     let ramp = sample(24_000, (0..1000).map(|n| n as f32 / 1000.0).collect());
     let mut dw = sampler(vec![zone(ramp, Zone::default())]);
     let out = play(&mut dw, 48, 1.0, 8);
-    close(f64::from(out[1]), 0.0005, 1e-4);
+    close(f64::from(out[1]), 0.0004375, 1e-4);
     close(f64::from(out[3]), 0.0015, 1e-4);
     assert_eq!(out[2], 0.001);
 }
@@ -930,7 +933,9 @@ fn loops_wrap_by_their_overshoot_and_interpolate_across_the_seam() {
         300,
     );
     assert_eq!(out[266], 0.399);
-    close(f64::from(out[267]), 0.2005, 1e-4);
+    // On the cubic curve the read at 200.5 comes around the seam — the frame before the
+    // loop's first is its last (399) — so it dips to 0.188, not the straight-line 0.2005.
+    close(f64::from(out[267]), 0.188, 1e-4);
     // Half a frame a frame: 399.5 reads between 399 and the loop start.
     let out = play(
         &mut sampler(vec![zone(ramp_at(24_000), looping)]),

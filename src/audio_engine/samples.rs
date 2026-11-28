@@ -70,6 +70,49 @@ pub(crate) fn sampler_zones(cstm: &Cstm, samples: &SampleCache) -> Vec<(Zone, Pc
     own_zones(cstm, samples)
 }
 
+/// Whether DW Sampler `module` names a sample the loader asked for at the last load and did not
+/// find, so it plays nothing for want of that file: FL Studio Mobile's panel then reads "Sample
+/// not found or corrupted :(" where its controls would be, and the rack shows the same. A sampler
+/// whose program (.dwp) is missing is not this: its panel keeps the values it was saved with (the
+/// program's own samples missing does count — the program is there, its sounds are not).
+pub(crate) fn dw_missing(module: &ModuleInstance, samples: &SampleCache) -> bool {
+    let Some(blob) = module
+        .file
+        .custom_data
+        .as_deref()
+        .filter(|_| module.type_id == 1)
+    else {
+        return false;
+    };
+    let cstm = Cstm::read(blob);
+    // The sample files the module's own zones name.
+    let mut keys: Vec<SampleKey> = (cstm.zones.iter())
+        .filter_map(|(path, _)| dw_path(path))
+        .map(SampleKey::File)
+        .collect();
+    if let Some(path) = program_path(&cstm) {
+        match samples.program(&path) {
+            // The program's zones name their samples relative to it; a plain audio file used as
+            // the program is its own one zone, keyed by the file itself.
+            Some(program) => keys.extend(program.iter().map(|(_, key)| (*key).clone())),
+            // No program read: a missing `.dwp` keeps its panel (above), but a program that is a
+            // plain audio file and is not there is a missing sample.
+            None => {
+                let (ContentPath::Shorthand { relative: text, .. } | ContentPath::Plain(text)) =
+                    &path;
+                let lower = text.to_ascii_lowercase();
+                if [".wav", ".flac", ".mp3", ".ogg", ".aif", ".aiff"]
+                    .iter()
+                    .any(|ext| lower.ends_with(ext))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    !keys.is_empty() && keys.iter().any(|key| samples.missing().any(|m| m == key))
+}
+
 fn own_zones(cstm: &Cstm, samples: &SampleCache) -> Vec<(Zone, Pcm)> {
     match program_path(cstm) {
         Some(path) => program_zones(&path, samples, cstm.program.as_ref().and_then(|p| p.root)),
@@ -172,3 +215,82 @@ fn soundfonts(channel: &Channel, refs: &mut Refs) {
 
 /// The SoundFont Player's module type id.
 const SOUNDFONT_PLAYER: u16 = 52;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A DW Sampler `CSTM`: one zone over every key playing "My Samples/Loop.wav" (as in
+    /// `merge`'s tests).
+    fn dw_zone() -> Vec<u8> {
+        let mut zone = b"@L@\0My Samples/Loop.wav".to_vec();
+        zone.resize(1024, 0);
+        zone.extend([60, 0, 127, 0, 127]);
+        for word in [1.0f32.to_bits(), 0.5f32.to_bits(), 2, 100, 30_000] {
+            zone.extend(word.to_le_bytes());
+        }
+        for value in [0.0f32, 1.0, 1.0, 0.1] {
+            zone.extend(value.to_le_bytes());
+        }
+        let mut blob = b"10WDZONE".to_vec();
+        blob.extend((zone.len() as u32).to_le_bytes());
+        blob.extend(zone);
+        blob
+    }
+
+    fn dw_module(blob: Option<Vec<u8>>) -> ModuleInstance {
+        let mut module = ModuleInstance::new(1, 2);
+        module.file.custom_data = blob;
+        module
+    }
+
+    /// A 16-bit mono PCM WAV at 44.1 kHz (as in `sample_cache`'s tests).
+    fn wav(samples: &[i16]) -> Vec<u8> {
+        let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + data.len() as u32).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend(44_100u32.to_le_bytes());
+        bytes.extend(88_200u32.to_le_bytes());
+        bytes.extend(2u16.to_le_bytes());
+        bytes.extend(16u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend((data.len() as u32).to_le_bytes());
+        bytes.extend(data);
+        bytes
+    }
+
+    #[test]
+    fn a_dw_sampler_whose_sample_is_missing_is_missing() {
+        let module = dw_module(Some(dw_zone()));
+        let mut samples = SampleCache::default();
+        samples.load_dw(&module, &|_| None);
+        assert!(dw_missing(&module, &samples));
+    }
+
+    #[test]
+    fn a_dw_sampler_whose_sample_is_there_is_not_missing() {
+        let module = dw_module(Some(dw_zone()));
+        let mut samples = SampleCache::default();
+        samples.load_dw(&module, &|_| Some(wav(&[0, 1000, 0, -1000])));
+        assert!(!dw_missing(&module, &samples));
+    }
+
+    #[test]
+    fn a_dw_sampler_that_names_nothing_is_not_missing() {
+        let samples = SampleCache::default();
+        assert!(!dw_missing(&dw_module(None), &samples));
+        assert!(!dw_missing(&dw_module(Some(Vec::new())), &samples));
+    }
+
+    #[test]
+    fn another_module_with_a_dw_blob_is_not_missing() {
+        let samples = SampleCache::default();
+        let mut module = ModuleInstance::new(2, 2);
+        module.file.custom_data = Some(dw_zone());
+        assert!(!dw_missing(&module, &samples));
+    }
+}

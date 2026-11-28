@@ -970,6 +970,10 @@ fn a_setting_edit_writes_the_cstm_with_no_undo_step() {
 fn a_panel_setting_saved_and_opened_again_is_in_the_modules_cstm() {
     // The fixture song: its DirectWave has an 81-byte CSTM (`DW01`, `MIDI` and its zones).
     let (mut rig, _) = fresh_song();
+    // The fixture's samples are not in the test library, so the load marked them missing and the
+    // panel would read "Sample not found or corrupted :(" (FL Studio Mobile's text) instead of
+    // showing its controls; this test is about the setting, so clear the load's marks.
+    rig.app.audio.samples.forget_missing();
     let cstm = |rig: &Rig| {
         rig.app.song.channels[1].rack.modules[0]
             .file
@@ -1010,6 +1014,8 @@ fn a_panel_setting_saved_and_opened_again_is_in_the_modules_cstm() {
     assert_eq!(rig.overlays(), [Overlay::Rack(1)]);
     let saved = rig.app.song.clone();
     command(&mut rig, egui::Key::O);
+    // The loading screen's frame: the picked song replaces the current one on the next.
+    rig.frame(vec![]);
     assert_eq!(rig.app.song, saved);
     assert_eq!(cstm(&rig), Some(edited));
 }

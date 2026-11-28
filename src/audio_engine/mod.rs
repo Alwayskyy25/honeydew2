@@ -48,6 +48,39 @@ pub use slicer::{auto_clip as slicer_auto_clip, settle_first_notes};
 
 const BLOCK_FRAMES: usize = 1024;
 
+/// A channel counts as silent, for sleeping its rack, while its peak stays under this (−80 dB):
+/// a tail that quiet is inaudible in any mix, and two full seconds of it only decay further.
+const QUIET_PEAK: f32 = 1e-4;
+
+/// Whether a channel's rack may stand still for a segment: nothing held or sounding on it,
+/// silence coming in, and it has already been silent for the whole hold. Anything louder —
+/// a note, a send arriving, a tail still ringing — runs the rack as before.
+fn rack_rests(active: bool, in_peak: f32, quiet: u64, hold: u64) -> bool {
+    !active && in_peak < QUIET_PEAK && quiet >= hold
+}
+
+/// The peak absolute sample of a stereo block.
+fn peak(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .chain(right.iter())
+        .fold(0.0_f32, |peak, &sample| peak.max(sample.abs()))
+}
+
+/// Whether a channel can make sound without a new event: a live key down at its input, a note
+/// held (its own row of `held` also counts the pads' notes), a note-off the sustain pedal
+/// holds, or an instrument with a voice still sounding.
+fn channel_active(
+    held: &[[u8; 128]],
+    sustained: &[[u8; 128]],
+    held_keys: u128,
+    instruments: &[(i32, InstrumentModule)],
+) -> bool {
+    held_keys != 0
+        || held.iter().flatten().any(|&count| count > 0)
+        || sustained.iter().flatten().any(|&count| count > 0)
+        || instruments.iter().any(|(_, module)| module.active())
+}
+
 /// Prepare the worker pool off the audio callback: on the desktop and, a Honeydew change (#145, #156), Android. The
 /// web and iOS retain the sequential path even if an old preference is on.
 pub(crate) fn prepare_multi_core() -> bool {
@@ -168,6 +201,10 @@ pub struct SongAudioEngine {
     note_traces: Vec<(usize, NoteEffectTrace)>,
     note_slabs: Vec<Vec<f32>>,
     channel_meters: Vec<MeterSnapshot>,
+    /// Per channel, how many frames it has been silent for — nothing held or sounding, silence
+    /// in and out. At two seconds of it the channel's rack sleeps until sound returns
+    /// ([`rack_rests`]); the count resets the moment anything on the channel sounds.
+    quiet: Vec<u64>,
     /// Each meter's peaks over the last render call, which actions split into segments.
     held_meters: Vec<MeterSnapshot>,
     sample_rate: f32,
@@ -492,6 +529,7 @@ impl SongAudioEngine {
             note_traces,
             note_slabs,
             channel_meters: vec![MeterSnapshot::default(); count],
+            quiet: vec![0; count],
             sample_rate,
             tempo_bpm,
             built_bpm: tempo_bpm,
@@ -858,38 +896,61 @@ impl SongAudioEngine {
     }
 
     fn process_racks(&mut self, context: ProcessContext, frames: usize) -> bool {
-        // Only the multi-core path reads the block size.
-        #[cfg(not(multi_core))]
-        let _ = frames;
+        // Two seconds of silence at the engine's rate, after which a quiet channel's rack sleeps.
+        let hold = (f64::from(self.sample_rate) * 2.0) as u64;
         #[cfg(multi_core)]
         if self.multi_core
             && frames >= 128
             && self.mixer.has_parallel_stage()
             && let Some(pool) = parallel::pool()
         {
-            let (mixer, buffers, instruments, audio) = (
+            let (mixer, buffers, instruments, audio, quiet, held, sustained, held_keys) = (
                 &self.mixer,
                 &mut self.buffers,
                 &mut self.instruments,
                 &mut self.audio,
+                &mut self.quiet,
+                &self.held,
+                &self.sustained,
+                &self.held_keys,
             );
+            let active: Vec<bool> = (0..buffers.len())
+                .map(|index| {
+                    channel_active(
+                        &held[index],
+                        &sustained[index],
+                        held_keys[index],
+                        &instruments[index],
+                    )
+                })
+                .collect();
             let processors = audio.channels_mut();
             let stages = mixer.stage_of();
             for stage in 0..mixer.stages().len() {
                 if let [index] = mixer.stages()[stage].as_slice() {
-                    let buffer = &mut buffers[*index];
-                    if process_rack(
-                        &mut processors[*index],
-                        &mut instruments[*index],
-                        &mut buffer.left,
-                        &mut buffer.right,
-                        context,
-                    )
-                    .is_err()
-                    {
-                        return false;
+                    let index = *index;
+                    let in_peak = peak(&buffers[index].left, &buffers[index].right);
+                    if !rack_rests(active[index], in_peak, quiet[index], hold) {
+                        let buffer = &mut buffers[index];
+                        if process_rack(
+                            &mut processors[index],
+                            &mut instruments[index],
+                            &mut buffer.left,
+                            &mut buffer.right,
+                            context,
+                        )
+                        .is_err()
+                        {
+                            return false;
+                        }
+                        let out_peak = peak(&buffers[index].left, &buffers[index].right);
+                        if !active[index] && in_peak < QUIET_PEAK && out_peak < QUIET_PEAK {
+                            quiet[index] += frames as u64;
+                        } else {
+                            quiet[index] = 0;
+                        }
                     }
-                    tap_keys(mixer, processors, buffers, *index);
+                    tap_keys(mixer, processors, buffers, index);
                     mixer.route_stage(buffers, stage);
                     continue;
                 }
@@ -898,16 +959,29 @@ impl SongAudioEngine {
                         .par_iter_mut()
                         .zip(instruments.par_iter_mut())
                         .zip(buffers.par_iter_mut())
+                        .zip(quiet.par_iter_mut())
+                        .zip(active.par_iter().map(|on| *on))
                         .enumerate()
                         .filter(|(index, _)| stages[*index] == stage)
-                        .try_for_each(|(_, ((audio, instruments), buffer))| {
-                            process_rack(
+                        .try_for_each(|(_, ((((audio, instruments), buffer), quiet), active))| {
+                            let in_peak = peak(&buffer.left, &buffer.right);
+                            if rack_rests(active, in_peak, *quiet, hold) {
+                                return Ok(());
+                            }
+                            let result = process_rack(
                                 audio,
                                 instruments,
                                 &mut buffer.left,
                                 &mut buffer.right,
                                 context,
-                            )
+                            );
+                            let out_peak = peak(&buffer.left, &buffer.right);
+                            if !active && in_peak < QUIET_PEAK && out_peak < QUIET_PEAK {
+                                *quiet += frames as u64;
+                            } else {
+                                *quiet = 0;
+                            }
+                            result
                         })
                 });
                 if result.is_err() {
@@ -922,20 +996,45 @@ impl SongAudioEngine {
         }
         // As `Mixer::mix`, each channel's rack output keying the channels it keys before its strip.
         let audio = self.audio.channels_mut();
-        let (instruments, buffers) = (&mut self.instruments, &mut self.buffers);
+        let (instruments, buffers, held, sustained, held_keys, quiet) = (
+            &mut self.instruments,
+            &mut self.buffers,
+            &self.held,
+            &self.sustained,
+            &self.held_keys,
+            &mut self.quiet,
+        );
         for &index in self.mixer.order() {
-            let buffer = &mut buffers[index];
-            let (left, right) = (&mut buffer.left, &mut buffer.right);
-            if process_rack(
-                &mut audio[index],
-                &mut instruments[index],
-                left,
-                right,
-                context,
-            )
-            .is_err()
-            {
-                return false;
+            // A channel that has been silent long enough sleeps through the segment: its
+            // buffer already holds the silence a running rack would output, and routing it
+            // on adds that silence, so nothing downstream can hear the difference.
+            let in_peak = peak(&buffers[index].left, &buffers[index].right);
+            let active = channel_active(
+                &held[index],
+                &sustained[index],
+                held_keys[index],
+                &instruments[index],
+            );
+            if !rack_rests(active, in_peak, quiet[index], hold) {
+                let buffer = &mut buffers[index];
+                let (left, right) = (&mut buffer.left, &mut buffer.right);
+                if process_rack(
+                    &mut audio[index],
+                    &mut instruments[index],
+                    left,
+                    right,
+                    context,
+                )
+                .is_err()
+                {
+                    return false;
+                }
+                let out_peak = peak(&buffers[index].left, &buffers[index].right);
+                if !active && in_peak < QUIET_PEAK && out_peak < QUIET_PEAK {
+                    quiet[index] += frames as u64;
+                } else {
+                    quiet[index] = 0;
+                }
             }
             tap_keys(&self.mixer, audio, buffers, index);
             self.mixer.route_channel(buffers, index);
@@ -3035,6 +3134,64 @@ mod tests {
         // Over the wrap at beat 2, to beat 0.25: back to the saved value, and nothing else.
         engine.render(&mut vec![0.0; 18_000 * 2], 2);
         assert_eq!(*set.lock().unwrap(), [(9, saved)]);
+    }
+
+    /// A channel silent long enough sleeps: its rack stops being processed until a note wakes
+    /// it, and its output stays silence throughout.
+    #[test]
+    fn a_long_silent_channels_rack_sleeps_until_it_sounds() {
+        use std::sync::Mutex;
+
+        /// Counts its process calls; sounds only while a note holds it.
+        struct Probe(Arc<Mutex<(usize, bool)>>);
+        impl Instrument for Probe {
+            fn set_parameter(&mut self, _: usize, _: f32) {}
+            fn note_on(&mut self, _: u8, _: f32, _: f32) {
+                self.0.lock().unwrap().1 = true;
+            }
+            fn note_off(&mut self, _: u8) {
+                self.0.lock().unwrap().1 = false;
+            }
+            fn all_notes_off(&mut self) {}
+            fn reset(&mut self) {}
+            fn process(&mut self, left: &mut [f32], right: &mut [f32], _: ProcessContext) {
+                let mut state = self.0.lock().unwrap();
+                state.0 += 1;
+                if state.1 {
+                    left.fill(0.25);
+                    right.fill(0.25);
+                }
+            }
+            fn active(&self) -> bool {
+                self.0.lock().unwrap().1
+            }
+        }
+        let mut song = Song::default();
+        song.add_channel(ChannelKind::Synth(SynthKind::MiniSynth));
+        let mut engine = SongAudioEngine::new(&song, 48_000.0).unwrap();
+        let state = Arc::new(Mutex::new((0usize, false)));
+        engine.instruments[1][0].1.instrument = Box::new(Probe(state.clone()));
+        engine.play();
+        let mut output = vec![0.0; 1024 * 2];
+        // Three seconds of silence: the rack runs while the channel proves itself quiet
+        // (two seconds), then sleeps — its process count stops growing.
+        for _ in 0..141 {
+            engine.render(&mut output, 2);
+        }
+        assert!(output.iter().all(|&sample| sample == 0.0));
+        let slept_at = state.lock().unwrap().0;
+        assert!(slept_at > 0);
+        for _ in 0..47 {
+            engine.render(&mut output, 2);
+        }
+        assert_eq!(state.lock().unwrap().0, slept_at);
+        assert!(engine.quiet[1] >= (48_000.0 * 2.0) as u64);
+        // A note wakes it at once, and it sounds.
+        engine.note_on(1, 60, 0.8);
+        engine.render(&mut output, 2);
+        assert!(state.lock().unwrap().0 > slept_at);
+        assert!(output.iter().any(|&sample| sample.abs() > 0.1));
+        assert_eq!(engine.quiet[1], 0);
     }
 
     /// A param set that moves another of its effect (Tremolo, ID 46: Max below Min lowers Min) leaves what the effect

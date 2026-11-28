@@ -197,6 +197,14 @@ pub fn show(
         let entry = state.panel.soundfonts.entry(sf2d.path);
         entry.or_insert_with_key(|path| files.soundfont(path));
     }
+    // The channel's DW Samplers whose samples are all missing: their cards say so, FL Studio Mobile's way.
+    state.panel.dw_missing = ch
+        .rack
+        .modules
+        .iter()
+        .filter(|module| crate::audio_engine::samples::dw_missing(module, &app.audio.samples))
+        .map(|module| module.instance_id)
+        .collect();
     for module in &ch.rack.modules {
         crate::panels::post_loop(ui.ctx(), module, &app.audio.samples);
     }

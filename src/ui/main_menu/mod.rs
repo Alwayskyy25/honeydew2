@@ -205,8 +205,9 @@ fn help_menu(ctx: &eframe::egui::Context, cx: &UiCtx, id: Id, at: Pos2) -> Popup
 /// Where the menu's parts go on a screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShellLayout {
-    /// The right of the screen: 20 U wide, or the whole screen if that is narrower or portrait
-    /// ([`is_portrait`](crate::metrics::is_portrait)).
+    /// The right of the screen: 20 U wide, or the whole screen if that is narrower. In portrait the
+    /// width follows the UI scale like the rack's does, as FL Studio Mobile's menu panel does: at
+    /// 100 % it spans a phone's screen, below that it leaves part of the playlist visible.
     pub panel: Rect,
     pub header: Rect,
     /// Directly under the header, across the whole panel.
@@ -217,9 +218,13 @@ pub struct ShellLayout {
 
 /// Lays the menu out on `screen`.
 pub fn shell_layout(screen: Rect, m: &Metrics) -> ShellLayout {
-    let w = match crate::metrics::is_portrait(screen) {
-        true => screen.width(),
-        false => m.u(PANEL_W).min(screen.width()),
+    let w = if crate::metrics::is_portrait(screen) {
+        // The rack's law (see [`ShellLayout::panel`]): the whole screen at 100 %, the UI scale's
+        // share of it below that.
+        let u100 = (m.dpi() / 6.0).round().max(1.0);
+        screen.width() * (m.u_px() / u100).min(1.0)
+    } else {
+        m.u(PANEL_W).min(screen.width())
     };
     let panel = screen.with_min_x(screen.right() - w);
     let inner = panel.shrink(m.u(PAD));

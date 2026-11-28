@@ -1,5 +1,5 @@
 //! DW Sampler (ID 1): a key- and velocity-zoned sample player.
-//! [`VOICES`] voices, each with linear-interpolated playback, a linear amp envelope, a filter with its own envelope, a
+//! [`VOICES`] voices, each with cubic-interpolated playback, a linear amp envelope, a filter with its own envelope, a
 //! frequency envelope and an LFO. The zones and their decoded samples arrive at construction on the app thread;
 //! nothing here allocates after [`DwSampler::new`].
 
@@ -720,6 +720,10 @@ impl Instrument for DwSampler {
         self.voices.iter_mut().for_each(Voice::release);
     }
 
+    fn active(&self) -> bool {
+        self.voices.iter().any(|voice| voice.stage != Stage::Off)
+    }
+
     fn reset(&mut self) {
         self.held_count = 0;
         self.last = None;
@@ -922,6 +926,42 @@ impl Instrument for DwSampler {
     }
 }
 
+/// The four frames a cubic read at frame `i` interpolates through — `i−1, i, i+1, i+2` —
+/// wrapped inside a loop (before the loop's first frame is its last, after its last its
+/// first) and, when `last` is known, clamped to it outside a loop.
+fn cubic_frames(i: usize, looped: Option<(f64, f64)>, last: Option<usize>) -> [usize; 4] {
+    let clamp = |k: usize| last.map_or(k, |last| k.min(last));
+    match looped {
+        Some((start, end)) if end as usize > start as usize => {
+            let (start, end) = (start as usize, end as usize);
+            let after = |k: usize| {
+                if k >= end {
+                    start + (k - start) % (end - start)
+                } else {
+                    k
+                }
+            };
+            let before = if i == start {
+                end - 1
+            } else {
+                i.saturating_sub(1)
+            };
+            [before, i, after(i + 1), after(i + 2)]
+        }
+        _ => [i.saturating_sub(1), clamp(i), clamp(i + 1), clamp(i + 2)],
+    }
+}
+
+/// Catmull-Rom through `p1` and `p2` at fraction `t`: the curve [`SampleData::read`] and
+/// the SoundFont Player's Quality High read by. Linear playback ripples at low steps —
+/// at step ½ (Pitch an octave down) it alternates exact frames with midpoint averages,
+/// which is a periodic ripple on the harmonics, heard as a wrong character.
+fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+    p1 + 0.5
+        * t
+        * (p2 - p0 + t * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + t * (3.0 * (p1 - p2) + p3 - p0)))
+}
+
 /// [`read`] for a streamed sample, voice `voice`'s of `rings`: `None` when a frame is not there yet.
 fn read_disk(
     rings: &Rings,
@@ -931,29 +971,40 @@ fn read_disk(
 ) -> Option<(f32, f32)> {
     let i = pos as usize;
     let t = (pos - i as f64) as f32;
-    let next = match looped {
-        Some((start, end)) if (i + 1) as f64 >= end => start as usize,
-        _ => i + 1,
+    let [a, b, c, d] = cubic_frames(i, looped, None);
+    // The two frames around `pos` must be there; the curve's outer neighbours fall back
+    // to them while the ring is still filling at a stream's edges. The neighbour before
+    // a loop's first frame is its last, which a ring — a forward window from the voice's
+    // position — cannot be asked for: the request would drag its fill to the loop's end
+    // and strand the voice. It falls back instead; the frame is one curve point at the
+    // seam, where the wrapped RAM read and this one part ways inaudibly.
+    let wrapped_before = matches!(looped, Some((start, _)) if i == start as usize);
+    let p1 = rings.frame(voice, b)?;
+    let p2 = rings.frame(voice, c)?;
+    let p0 = if wrapped_before {
+        p1
+    } else {
+        rings.frame(voice, a).unwrap_or(p1)
     };
-    let (a, b) = (rings.frame(voice, i)?, rings.frame(voice, next)?);
-    Some((a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)))
+    let p3 = rings.frame(voice, d).unwrap_or(p2);
+    Some((
+        catmull_rom(p0.0, p1.0, p2.0, p3.0, t),
+        catmull_rom(p0.1, p1.1, p2.1, p3.1, t),
+    ))
 }
 
-/// The sample at `pos` by linear interpolation; inside a loop the frame after the last is the loop start. Mono
-/// returns the same value twice.
+/// The sample at `pos` by cubic interpolation; inside a loop the neighbours wrap (see
+/// [`cubic_frames`]). Mono returns the same value twice.
 fn read(sample: &SampleData, pos: f64, looped: Option<(f64, f64)>) -> (f32, f32) {
     let i = pos as usize;
     let t = (pos - i as f64) as f32;
-    let next = match looped {
-        Some((start, end)) if (i + 1) as f64 >= end => start as usize,
-        _ => i + 1,
+    let frames = cubic_frames(i, looped, Some(sample.left.len().saturating_sub(1)));
+    let cubic = |x: &[f32]| {
+        let at = |k: usize| x.get(frames[k]).copied().unwrap_or(0.0);
+        catmull_rom(at(0), at(1), at(2), at(3), t)
     };
-    let lerp = |x: &[f32]| {
-        let a = x.get(i).copied().unwrap_or(0.0);
-        a + t * (x.get(next).copied().unwrap_or(0.0) - a)
-    };
-    let left = lerp(&sample.left);
-    (left, sample.right.as_deref().map_or(left, lerp))
+    let left = cubic(&sample.left);
+    (left, sample.right.as_deref().map_or(left, cubic))
 }
 
 #[cfg(test)]
@@ -966,6 +1017,27 @@ mod tests {
             dw.set_parameter(index, value);
         }
         dw.block()
+    }
+
+    /// Playback reads on the Catmull-Rom curve, not a straight line: a lone peak's
+    /// shoulders round out (linear would read 0.5 at the midpoint below), a ramp stays
+    /// exact, and inside a loop the neighbours wrap around it.
+    #[test]
+    fn reads_are_cubic_and_wrap_inside_a_loop() {
+        let sample = |left: Vec<f32>| SampleData {
+            sample_rate: 48_000,
+            left: left.into(),
+            right: None,
+            meta: Default::default(),
+        };
+        let peak = sample(vec![0.0, 0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(read(&peak, 1.5, None).0, 0.5625);
+        let ramp = sample(vec![0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(read(&ramp, 1.5, None).0, 1.5);
+        // The loop is frames 1..3 (20, 30): past its last frame the curve continues
+        // into its first, where linear would read 27.5.
+        let looped = sample(vec![10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(read(&looped, 2.25, Some((1.0, 3.0))).0, 28.4375);
     }
 
     #[test]

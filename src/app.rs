@@ -112,6 +112,8 @@ const RECORD_TAG: &str = "recording";
 const REOPEN_RETRY_S: f64 = 1.0;
 /// What a song that loads with audio files missing shows, and its tag.
 const MISSING_AUDIO: &str = "Some audio files were missing";
+/// The loading screen's title while a picked song opens, FL Studio Mobile's words for the same screen.
+const LOADING_SONG: &str = "Loading...";
 /// The tag of the message that the output fell back from the project's sample rate (PR #87).
 const RATE_TAG: &str = "sample_rate_fallback";
 const MISSING_TAG: &str = "missing audio";
@@ -265,6 +267,9 @@ pub struct HoneydewApp {
     export: Option<crate::project_files::export::Job>,
     /// `Restore demo songs` behind its loading screen (`app/demo_restore.rs`).
     demo_restore: Option<demo_restore::DemoRestore>,
+    /// A song picked to open, held one frame behind its `Loading...` screen before it replaces the
+    /// current song ([`Self::project_files`]), as FL Studio Mobile opens a project.
+    opening: Option<Song>,
     /// `Burn Notes to Track` behind its loading screen: the channel's id, and whether the screen has had its frame
     /// (`app/tracks.rs`).
     burn: Option<(i32, bool)>,
@@ -366,6 +371,7 @@ impl Default for HoneydewApp {
             audio_edit: None,
             export: None,
             demo_restore: None,
+            opening: None,
             burn: None,
             midi: Default::default(),
             missing_audio: false,
@@ -1066,6 +1072,13 @@ impl HoneydewApp {
     /// newer-version answer, finished file requests, and the overlays they ask for. An opened song replaces the
     /// current one.
     fn project_files(&mut self, ctx: &egui::Context) {
+        // A song picked last frame opens now: its `Loading...` screen has had its frame, and the
+        // load closes the screen once the song is in ([`Self::song_loaded`]), as FL Studio Mobile's
+        // loading screen closes once the project is ready.
+        if let Some(song) = self.opening.take() {
+            self.song = song;
+            self.song_replaced(ctx);
+        }
         let busy = self.nav.overlays.iter().any(|o| {
             matches!(
                 o,
@@ -1084,9 +1097,16 @@ impl HoneydewApp {
         self.files.songs_folder = self.slots.main_menu.songs_folder().map(Into::into);
         // The first-import notice's `Import`, kept in the settings.
         self.files.import_accepted |= self.settings.import_notice_accepted;
-        if let Some(song) = self.files.update(ctx, &mut self.song, !busy, answer) {
-            self.song = song;
-            self.song_replaced(ctx);
+        let opened = self.files.update(ctx, &mut self.song, !busy, answer);
+        let stashed = opened.is_some();
+        if let Some(song) = opened {
+            // Behind the loading screen first: the song replaces the current one next frame, once
+            // the screen has shown, as FL Studio Mobile opens a project behind its `Loading...`.
+            self.opening = Some(song);
+            self.navigate(Nav::Open(Overlay::Busy {
+                title: LOADING_SONG.into(),
+            }));
+            ctx.request_repaint();
         }
         self.settings.import_notice_accepted = self.files.import_accepted;
         // The render message's `Open My Tracks` (#72): SONGS on the render.
@@ -1109,8 +1129,14 @@ impl HoneydewApp {
             self.song_edited(SongEdit::RackState, 0);
             ctx.request_repaint();
         }
-        while let Some(overlay) = self.files.take_overlay() {
-            self.navigate(Nav::Open(overlay));
+        // A load's own message (its notices) opens with its song: while the song waits behind
+        // the loading screen, the message waits inside `files` too — opening it now would lose
+        // it to the navigation reset the song's arrival makes, and it is taken next frame,
+        // after that reset, instead.
+        if !stashed {
+            while let Some(overlay) = self.files.take_overlay() {
+                self.navigate(Nav::Open(overlay));
+            }
         }
         // After the load's own message (one shows at a time).
         let message = |o: &Overlay| matches!(o, Overlay::Message { .. });
@@ -4445,8 +4471,10 @@ mod tests {
         rig.app.files = ProjectFiles::with_provider(Box::new(mem.clone()));
         rig.click(OUTSIDE);
         command(&mut rig, egui::Key::O);
-        rig.app.navigate(Nav::Close);
+        // The loading screen's frame: the picked song replaces the current one on the next, and
+        // its missing-audio message is the one the close drops.
         rig.frame(vec![]);
+        rig.app.navigate(Nav::Close);
         rig.take();
         (rig, mem)
     }
@@ -4490,6 +4518,8 @@ mod tests {
         rig.app.navigate(Nav::Open(Overlay::Rack(1)));
         rig.take();
         command(&mut rig, egui::Key::O);
+        // The loading screen's frame: the picked song replaces the current one on the next.
+        rig.frame(vec![]);
         assert_eq!(rig.app.song.title, "Beat");
         assert_eq!(rig.app.song.channels.len(), 3);
         assert_eq!(rig.app.selected_channel, 1);
@@ -4507,6 +4537,8 @@ mod tests {
         rig.click(OUTSIDE);
         rig.take();
         command(&mut rig, egui::Key::O);
+        // The loading screen's frame: the picked song replaces the current one on the next.
+        rig.frame(vec![]);
         assert_eq!(rig.take(), ["Stop", "ReplaceSong"]);
         // No notices; its samples are original content, which tests do not have.
         let missing = |o: &[Overlay]| {
@@ -4602,6 +4634,8 @@ mod tests {
                 rig.click(OUTSIDE);
             }
             command(&mut rig, egui::Key::O);
+            // The loading screen's frame: the picked song replaces the current one on the next.
+            rig.frame(vec![]);
             assert_eq!(rig.app.song.title, "Gone");
             assert_eq!(rig.overlays(), [missing()], "audio started: {started}");
             // Once per load: an edit that rebuilds does not say it again; the next load does.
@@ -4610,6 +4644,7 @@ mod tests {
             rig.frame(vec![]);
             assert_eq!(rig.overlays(), []);
             command(&mut rig, egui::Key::O);
+            rig.frame(vec![]);
             assert_eq!(rig.overlays(), [missing()]);
         }
         // After the load's corrupted-data message, which shows first.
@@ -4621,6 +4656,7 @@ mod tests {
             ))
         };
         command(&mut rig, egui::Key::O);
+        rig.frame(vec![]);
         assert!(matches!(
             &rig.overlays()[..],
             [Overlay::Message {
@@ -4634,6 +4670,7 @@ mod tests {
         // A song whose samples are all there says nothing.
         let (mut rig, _) = rig_with_file("/songs/Beat.flm", &synthetic_file(2, FORMAT_VERSION, ""));
         command(&mut rig, egui::Key::O);
+        rig.frame(vec![]);
         assert_eq!(rig.overlays(), []);
     }
 
@@ -4642,6 +4679,7 @@ mod tests {
         let (mut rig, _) =
             rig_with_file("/songs/Empty.flm", &synthetic_file(0, FORMAT_VERSION, ""));
         command(&mut rig, egui::Key::O);
+        rig.frame(vec![]);
         assert_eq!(rig.app.song.channels.len(), 1);
         assert_eq!(rig.app.selected_channel, 0);
         assert_eq!(rig.take(), ["Stop", "ReplaceSong"]);
@@ -4689,6 +4727,7 @@ mod tests {
         rig.frame(vec![key_event(egui::Key::O, egui::Modifiers::NONE)]);
         assert_eq!(rig.app.song.title, "");
         command(&mut rig, egui::Key::O);
+        rig.frame(vec![]);
         assert_eq!(rig.app.song.title, "Beat");
         rig.app.add_default_drums(0);
         command(&mut rig, egui::Key::S);
@@ -5099,6 +5138,7 @@ mod tests {
         let (mut rig, mem) =
             rig_with_file("/songs/Beat.flm", &synthetic_file(2, FORMAT_VERSION, ""));
         command(&mut rig, egui::Key::O);
+        rig.frame(vec![]);
         rig.app.add_default_drums(0);
         rig.open_menu(MenuTab::Songs);
         // A swipe left on `Save` (a tap asks for the name).
@@ -5189,6 +5229,8 @@ mod tests {
         rig.open_menu(MenuTab::Songs);
         rig.take();
         songs_import_file(&mut rig);
+        // The loading screen's frame: the picked song replaces the current one on the next.
+        rig.frame(vec![]);
         assert_eq!(rig.app.song.title, "Beat");
         assert_eq!(rig.overlays(), []);
         assert_eq!(rig.take(), ["Stop", "ReplaceSong"]);
@@ -5591,6 +5633,7 @@ mod tests {
     fn project_save_new_always_asks_for_a_name() {
         let (mut rig, _) = rig_with_file("/songs/Beat.flm", &synthetic_file(1, FORMAT_VERSION, ""));
         command(&mut rig, egui::Key::O);
+        rig.frame(vec![]);
         rig.open_menu(MenuTab::Project);
         rig.click_id(project_id("Save New"));
         assert_eq!(
@@ -5841,7 +5884,9 @@ mod tests {
         let groove = synthetic_file(3, FORMAT_VERSION, "");
         rig.app.files.library.store("Groove.flm", &groove).unwrap();
         command(&mut rig, egui::Key::O);
-        // The playlist opens it, writing its clamped view zooms back (HEAD@296).
+        // The playlist opens it, writing its clamped view zooms back (HEAD@296): the frame the
+        // loading screen shows for, then the one that paints the opened song full-screen.
+        rig.frame(vec![]);
         rig.frame(vec![]);
         rig.app.add_default_drums(0);
         rig.take();
@@ -6067,6 +6112,8 @@ mod tests {
             command(&mut rig, egui::Key::S);
             rig.take();
             action.ask(&mut rig);
+            // The loading screen's frame, for the actions that open a song.
+            rig.frame(vec![]);
             assert_eq!(rig.overlays(), [], "{action:?}");
             let channels = match action {
                 Guarded::Import | Guarded::CtrlO => 3,

@@ -3778,6 +3778,28 @@ mod tests {
         bars
     }
 
+    /// The drum hits on track row `row`: blocks filling their row (taller than a bar, a hit's
+    /// width), left to right: (x, colour).
+    fn blocks(f: &Frame, row: f32) -> Vec<(f32, Color32)> {
+        let ys = Rangef::new(TOP + 64.0 * row, TOP + 64.0 * (row + 1.0));
+        let mut blocks: Vec<(f32, Color32)> = (f.shapes.iter())
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r)
+                    if r.rect.height() > 8.0
+                        && r.rect.height() < 40.0
+                        && r.rect.width() >= 8.0
+                        && r.rect.width() < 20.0
+                        && ys.contains(r.rect.top()) =>
+                {
+                    Some((r.rect.left(), r.fill))
+                }
+                _ => None,
+            })
+            .collect();
+        blocks.sort_by(|a, b| a.0.total_cmp(&b.0));
+        blocks
+    }
+
     /// The MiniSynth's clip shown twice (repeats at x 203 and 357; notes on beats 0 and 2 of each), and a Drums clip
     /// with a hit at beat 0.
     fn song_with_repeats() -> Song {
@@ -3816,7 +3838,7 @@ mod tests {
     fn preview_dims_every_clip_but_the_one_it_plays() {
         let mut rig = Rig::new(song_with_repeats());
         let f = rig.frame(vec![]);
-        let (synth, drums) = (bars(&f, 2.0), bars(&f, 1.0));
+        let (synth, drums) = (bars(&f, 2.0), blocks(&f, 1.0));
         assert_eq!(drums.len(), 1);
         rig.preview = Some(ClipKey {
             channel: 2,
@@ -3825,7 +3847,7 @@ mod tests {
         });
         let f = rig.frame(vec![]);
         assert_eq!(bars(&f, 2.0), synth);
-        assert_ne!(bars(&f, 1.0)[0].1, drums[0].1);
+        assert_ne!(blocks(&f, 1.0)[0].1, drums[0].1);
     }
 
     #[test]

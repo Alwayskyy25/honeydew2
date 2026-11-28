@@ -3735,7 +3735,7 @@ fn the_chrome_is_full_screen_below_20_u_with_margins_from_1_5_down_to_0_5_u() {
     let tab = collapse_tab(rack, u, 270.0);
     assert_eq!(
         (tab.left(), tab.width(), tab.center().y),
-        (538.0, 32.0, 270.0)
+        (514.0, 32.0, 270.0)
     );
     assert!((tab.height() - 1.6 * u).abs() < 1e-3);
     // 19 U: full screen already (narrower than 20 U), with 1 U margins.

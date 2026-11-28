@@ -545,6 +545,10 @@ impl Instrument for Slicer {
         }
     }
 
+    fn active(&self) -> bool {
+        self.voices.iter().any(|voice| voice.stage != Stage::Idle)
+    }
+
     fn reset(&mut self) {
         self.voices.fill(Voice::default());
     }
