@@ -300,7 +300,9 @@ impl Rig {
             egui::CentralPanel::default().show(ctx, |ui| {
                 actions = match view {
                     View::Pads => show_pads(ui, &cx, PADS, kit, state, Color32::RED, locked),
-                    View::Strips => show_strips(ui, &cx, STRIPS, kit, state, Color32::RED, links),
+                    View::Strips => {
+                        show_strips(ui, &cx, STRIPS, kit, state, Color32::RED, links, &[])
+                    }
                 };
             });
         });

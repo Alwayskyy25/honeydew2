@@ -113,9 +113,8 @@ const MULTIBAND: u16 = 36;
 const NOTE_ECHO: u16 = 47;
 /// An icon button's disc: 0.7 × half the rect height.
 const ICON_DISC: f32 = 0.7;
-/// The header's ≡ and close X: their icons' size factor, and the X's disc, this × the square's side in radius.
+/// The header's ≡: its icon's size factor.
 const HEADER_BUTTON_ICON: f32 = 0.6;
-const CLOSE_DISC: f32 = 0.375;
 /// Icon size factors in the card header and the send row.
 const HEADER_ICON: f32 = 0.6;
 const SEND_ICON: f32 = 0.75;
@@ -355,9 +354,9 @@ pub fn rack_rect(area: Rect, open: f32, portrait: bool, m: &Metrics) -> Rect {
     // Both are whole pixels: rounding the width first keeps float noise from truncating a pixel away.
     let full = (area.width() * ppp).round();
     let w = if portrait {
-        // `U` at 100 %: the width cap never reduces it ([`ui_unit_px`](crate::metrics::ui_unit_px)).
-        let u100 = (m.dpi() / 6.0).round().max(1.0);
-        full * (m.u_px() / u100).min(1.0)
+        // FL Studio Mobile's portrait rack: three quarters of the screen, whatever the UI scale
+        // (Rizky, 2026-11-28: the scale-following width was wrong; landscape's 20 U was already right).
+        (full * 0.75).round()
     } else {
         (RACK_W * m.u_px()).min(full)
     } / ppp;
@@ -396,7 +395,8 @@ pub struct Chrome {
     pub header_bottom: f32,
     /// The ≡ at the bar's left end, a square of its height.
     pub menu: Rect,
-    /// Full screen: the close X at the bar's right end, the same square.
+    /// Full screen: the square at the bar's right end the name leaves room for. The close X that sat
+    /// here is gone (Rizky, 2026-11-28): the collapse tab closes every rack, as in FL Studio Mobile.
     pub close: Option<Rect>,
     /// The channel name's room: between the buttons with equal insets (full screen), else right of the ≡.
     pub name: Rect,
@@ -436,12 +436,13 @@ impl Chrome {
     }
 }
 
-/// A side rack's collapse tab on `rack` at `u` per U (device px): 1 × 1.6 U, centred on the rack's left edge —
-/// on its edge line, as FL Studio Mobile's is — at the rack tab's height `tab_y`
-/// ([`crate::ui::main_screen::rack_tab_pill`]).
+/// The rack's collapse tab on `rack` at `u` per U (device px): 1 × 1.6 U, its centre a quarter of its
+/// width right of the rack's left edge — mostly inside the panel, hanging on its edge line rather than
+/// sitting dead on it, as FL Studio Mobile's does (Rizky, 2026-11-28: centred on the line was wrong) —
+/// at the rack tab's height `tab_y` ([`crate::ui::main_screen::rack_tab_pill`]).
 pub fn collapse_tab(rack: Rect, u: f32, tab_y: f32) -> Rect {
     let size = COLLAPSE * u;
-    Rect::from_center_size(pos2(rack.left(), tab_y), size)
+    Rect::from_center_size(pos2(rack.left() + size.x * 0.25, tab_y), size)
 }
 
 /// The y range of `rack` (px) in points.
@@ -1214,7 +1215,7 @@ pub struct RackActions {
     pub redetect: Vec<i32>,
     /// A Slicer's momentary `AUTO` was pressed: rewrite the current clip with its slices now.
     pub auto_clip: Option<i32>,
-    /// The close X, the collapse tab or the left margin was tapped: close the rack.
+    /// The collapse tab or the left margin was tapped: close the rack.
     pub close: bool,
     /// The `INPUT` menu opened: list the input devices into [`RackPanel::inputs`] for it.
     pub list_inputs: bool,
@@ -2623,9 +2624,10 @@ impl RackPanel {
         }
     }
 
-    /// The fixed chrome over the content ([`Chrome`]): the header bar with the rack ≡, the channel name and, full
-    /// screen, the close X; a side rack's shadow, edge line and collapse tab. `rack` is in device pixels. Returns
-    /// whether the X, the collapse tab or the left margin was tapped: the rack closes.
+    /// The fixed chrome over the content ([`Chrome`]): the header bar with the rack ≡ and the channel
+    /// name; the shadow, edge line and collapse tab on the rack's left edge — every rack closes by its
+    /// tab, as FL Studio Mobile's does, never by a header X (Rizky, 2026-11-28). `rack` is in device
+    /// pixels. Returns whether the collapse tab or the left margin was tapped: the rack closes.
     fn chrome(
         &mut self,
         ui: &mut Ui,
@@ -2675,19 +2677,10 @@ impl RackPanel {
             self.rack_menu = Some(px(c.menu).center());
         }
         let mut close = false;
-        // Full screen: the close X, on a disc of the bar's colour that lights under the mouse.
-        if let Some(x) = c.close.map(px) {
-            let response = ui.interact(x, ui.id().with("rack close"), Sense::click());
-            if widgets::hovered(ui, &response) {
-                let lit = crate::ui::buttons::hover_lit(ink);
-                painter.circle_filled(x.center(), CLOSE_DISC * x.width().min(x.height()), lit);
-            }
-            draw_icon(&painter, x, IconId::Close, contrast, HEADER_BUTTON_ICON, m);
-            close |= response.clicked();
-        }
-        // A side rack: a shadow over the view on its left and a t-wide channel-colour line at its edge, and the
-        // collapse tab.
-        if let Some(tab) = (!c.full).then(|| px(collapse_tab(rack, u, self.tab_y * ppp))) {
+        // The shadow over the view on the rack's left, a t-wide channel-colour line at its edge, and the
+        // collapse tab: every rack's way out, full racks (portrait) included.
+        {
+            let tab = px(collapse_tab(rack, u, self.tab_y * ppp));
             let (left, t) = (rack.left() / ppp, m.t());
             let line = Rect::from_x_y_ranges(left - t..=left, rect_y(rack, ppp));
             painter.rect_filled(line, 0.0, ink);

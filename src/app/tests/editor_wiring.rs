@@ -3910,14 +3910,25 @@ fn a_mini_mixer_edit_reaches_the_audio_as_set_param_and_saves_no_undo_step() {
 #[test]
 fn the_drum_strips_meters_show_each_slots_peak_from_the_engine() {
     use honeydew_audio::device::{ModuleKey, ModuleMeter};
-    // The mixer is out (`drum_rig`): the rows' meters are horizontal bars along the bottom of each row's page.
+    // The mixer is out (`drum_rig`): each strip's meter is a pair of bars under its Level slider, in the
+    // strip's bottom eighth (the slider sits 9 U in: the 3 U header cell, then Mute, Solo and Pan).
     let mut rig = drum_rig();
     let ink = channel_color(rig.app.song.channels[1].hue, &rig.app.theme).to_color32();
     let bars = |rig: &Rig| {
-        let rows = rig.rect_of(steps("grid")).y_range();
-        let left = 3.0 * U;
+        let row = rig
+            .app
+            .slots
+            .drum_editor
+            .step
+            .cell_rect(1, 0)
+            .expect("the step view drew");
         (rig.rects(ink).into_iter())
-            .filter(|r| r.left() == left && r.height() <= 4.0 && rows.contains(r.top()))
+            .filter(|r| {
+                r.left() == 9.0 * U
+                    && r.height() <= 4.0
+                    && r.top() >= row.bottom() - 0.3 * U
+                    && r.top() < row.bottom()
+            })
             .count()
     };
     assert_eq!(bars(&rig), 0, "at rest");

@@ -644,7 +644,8 @@ pub fn header_names(
 /// The pad editor strips in `rect` (points), one per slot of `kit`, all on `state.page`. Each keeps its header cell's
 /// room empty, for the host's row header. Controls bound to a slot param edit it in the kit and report it, and their
 /// press or parameter menu pick goes to [`DrumsState::touch`]; `links` are the channel's MIDI CC links (its `CCLK`),
-/// which enable a linked param's `Unlink from MIDI CC`.
+/// which enable a linked param's `Unlink from MIDI CC`. On the Mix page each strip also draws a level meter under
+/// its Level slider, from `levels` (per slot, its output peaks L and R).
 pub fn show_strips(
     ui: &mut Ui,
     cx: &UiCtx,
@@ -653,6 +654,7 @@ pub fn show_strips(
     state: &mut DrumsState,
     channel: Color32,
     links: &[CcLink],
+    levels: &[[f32; 2]],
 ) -> Vec<DrumsAction> {
     let m = cx.m;
     let ppp = m.ppp();
@@ -663,9 +665,13 @@ pub fn show_strips(
         let strip = strip_rect(rect, rows, row, ppp);
         let (_, controls) = place_strip(state.page, strip * ppp, m.u_px());
         let instance_id = -(slot.file.id as i32);
+        let mut level_slider = None;
         for (spec, (_, r)) in page_specs(state.page).iter().zip(controls) {
             let id = base.with((row, spec.ctl));
             let rect = r / ppp;
+            if spec.ctl == Ctl::Level {
+                level_slider = Some(rect);
+            }
             let menu = match spec.param {
                 Some(p) => ParamMenu::bound(links::has(links, instance_id, p as i32)),
                 None => ParamMenu::Unbound,
@@ -683,8 +689,33 @@ pub fn show_strips(
                 }
             }
         }
+        // The meter under the Level slider: it moves with the slot's sound, as FL Studio Mobile's does.
+        if let Some(slider) = level_slider {
+            let peaks = levels.get(row).copied().unwrap_or([0.0; 2]);
+            strip_meter(ui.painter(), strip, slider, peaks, channel);
+        }
     }
     actions
+}
+
+/// The Mix page's level meter under a strip's Level slider: two bars (L over R) in the strip's bottom
+/// eighth, spanning the slider, filled from the left to the slot's peaks on the meter scale — FL Studio
+/// Mobile's drum mixer draws the same live bar under each strip's volume (Rizky, 2026-11-28).
+fn strip_meter(painter: &Painter, strip: Rect, slider: Rect, peaks: [f32; 2], ink: Color32) {
+    let eighth = strip.height() / 8.0;
+    let bar = 2.0 * eighth / 5.0;
+    for (i, peak) in peaks.iter().enumerate() {
+        let y = if i == 0 {
+            (strip.bottom() - eighth)..=(strip.bottom() - eighth + bar)
+        } else {
+            (strip.bottom() - bar)..=strip.bottom()
+        };
+        let right = slider.left() + meter_level(*peak) * slider.width();
+        let r = Rect::from_x_y_ranges(slider.left()..=right, y);
+        if r.is_positive() {
+            painter.rect_filled(r, 0.0, ink);
+        }
+    }
 }
 
 /// Draws one strip control of slot `row`, with its parameter menu `menu`, and returns what it did.

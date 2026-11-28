@@ -441,6 +441,10 @@ pub struct StepSeqView {
     /// Per row, its pad's output peaks (L, R), linear, for the row's level meters. The host sets it each frame;
     /// a row past its end is silent.
     pub levels: Vec<[f32; 2]>,
+    /// The host draws the drum mixer's strips itself, each with a level meter under its Level slider:
+    /// with the mixer fully out the headers then draw no horizontal meters of their own (the strips'
+    /// are FL Studio Mobile's, under the volume). The host sets it each frame.
+    pub strip_meters: bool,
     /// Each clip's zoom and scroll, rows and time (posX, posY, zoom x, zoom y). The host keeps them when it resets the
     /// view for another channel, and a new song drops them with the rest of the view. Undo keeps them: a clip that an
     /// undo removes and a later edit adds again gets its old id back, and so its old view, which is harmless (each
@@ -684,7 +688,9 @@ fn header_pulse(ui: &Ui, id: Id, down: bool) -> f32 {
 /// The row headers in `l`, with ids from `id`: pad name over sample name. The current row's (`selected`) is filled with
 /// the channel colour `ink` and its texts are `moduleFill`; it grows while pressed (`press`), over the grid. The others
 /// have no fill and channel-coloured texts. The mixer's strip row right of each header is `moduleFill`. The level
-/// meters show `levels` (per row, its peaks L and R) and follow the drum mixer's `fold`. A tap on the current row's
+/// meters show `levels` (per row, its peaks L and R) and follow the drum mixer's `fold`; a host drawing the
+/// strips itself (`strip_meters`) replaces the fully open mixer's meters with its own, under the strips' Level
+/// sliders. A tap on the current row's
 /// header folds the drum mixer in or out; on another's, makes it current. Returns the row whose menu a long press (or
 /// right click) asked for, and where.
 /// The step sequencer and the free note-grid ([`crate::ui::drum_grid`]) each keep their own row, press and fold.
@@ -699,6 +705,7 @@ pub(crate) fn row_headers(
     levels: &[[f32; 2]],
     ink: egui::Color32,
     (current, press, fold): (&mut usize, &mut bool, &mut Fold),
+    strip_meters: bool,
 ) -> Option<(usize, Pos2)> {
     let (colors, m) = (&cx.theme.colors, cx.m);
     let module_fill = colors.module_fill.to_color32();
@@ -730,12 +737,15 @@ pub(crate) fn row_headers(
         let clip = painter.with_clip_rect(header);
         header_names(&clip, m, header, name, sample, color);
         // The level meters: vertical at the header's edge, horizontal under the page once the mixer is out (in the
-        // room the strip controls' 75 % high layer leaves at the bottom of the row).
+        // room the strip controls' 75 % high layer leaves at the bottom of the row). A host that draws the strips
+        // itself (`strip_meters`) puts its own meters under the strips' Level sliders instead: none here then.
         let full = fold.c == 1.0;
         let level = levels.get(row).map_or([0.0; 2], |p| p.map(meter_level));
-        for bar in meter_bars(header, page, full, level, m.t()) {
-            if bar.is_positive() {
-                painter.rect_filled(bar, 0.0, if full { ink } else { color });
+        if !(full && strip_meters) {
+            for bar in meter_bars(header, page, full, level, m.t()) {
+                if bar.is_positive() {
+                    painter.rect_filled(bar, 0.0, if full { ink } else { color });
+                }
             }
         }
         // A tap on the current row's header folds the drum mixer in or out; on another's, makes it current.
@@ -1064,9 +1074,18 @@ impl StepSeqView {
         }
         // Row headers: pad name over sample name, and the long press's row menu.
         let heads = (&mut self.selected, &mut self.press, &mut self.fold);
-        if let Some((row, at)) =
-            row_headers(ui, &painter, cx, id(), &l, pads, &self.levels, ink, heads)
-        {
+        if let Some((row, at)) = row_headers(
+            ui,
+            &painter,
+            cx,
+            id(),
+            &l,
+            pads,
+            &self.levels,
+            ink,
+            heads,
+            self.strip_meters,
+        ) {
             self.overlay = Some(Overlay::Menu { row, at });
         }
 

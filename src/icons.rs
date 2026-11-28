@@ -197,15 +197,17 @@ pub fn icon_shapes(id: IconId, square: Rect, color: Color32) -> Vec<Shape> {
         }
         StepSeq => {
             // Two rows of four pads, each with a small slot near its top, like FL Studio Mobile's drum
-            // channel icon. The slot is a gap in the pad, so a pad is tiled without overlaps: a top strip,
-            // two cheeks beside the slot (x + 2.05 .. x + 5.45, y + 1.5 .. y + 3.3), and the body below it.
+            // channel icon, drawn a touch small in the 48 grid (Rizky, 2026-11-28: the full-size pads
+            // read too big next to the other channel icons). The slot is a gap in the pad, so a pad is
+            // tiled without overlaps: a top strip, two cheeks beside the slot (x + 1.85 .. x + 4.9,
+            // y + 1.35 .. y + 2.97), and the body below it.
             for row in 0..2 {
                 for col in 0..4 {
-                    let (x, y) = (6.0 + 9.5 * col as f32, 11.5 + 14.0 * row as f32);
-                    p.rect(x, y, x + 7.5, y + 1.5, 2.0);
-                    p.rect(x, y + 1.5, x + 2.05, y + 3.3, 0.0);
-                    p.rect(x + 5.45, y + 1.5, x + 7.5, y + 3.3, 0.0);
-                    p.rect(x, y + 3.3, x + 7.5, y + 11.0, 1.0);
+                    let (x, y) = (7.8 + 8.55 * col as f32, 12.75 + 12.6 * row as f32);
+                    p.rect(x, y, x + 6.75, y + 1.35, 1.8);
+                    p.rect(x, y + 1.35, x + 1.85, y + 2.97, 0.0);
+                    p.rect(x + 4.9, y + 1.35, x + 6.75, y + 2.97, 0.0);
+                    p.rect(x, y + 2.97, x + 6.75, y + 9.9, 0.9);
                 }
             }
         }

@@ -274,7 +274,9 @@ pub fn show(state: &mut State, ui: &mut egui::Ui, app: &mut AppCtx, channel: usi
     (step_view.previewing, grid.previewing) = (app.previewing, app.previewing);
     let levels = slot_peaks(app, channel, kit);
     grid.levels.clone_from(&levels);
-    step_view.levels = levels;
+    step_view.levels = levels.clone();
+    // The strips below draw each row's meter under its Level slider: the views leave theirs out.
+    (step_view.strip_meters, grid.strip_meters) = (true, true);
     step_view.follow = app.settings.continuous_scroll;
     let row = |state: &State| {
         if steps {
@@ -346,7 +348,8 @@ pub fn show(state: &mut State, ui: &mut egui::Ui, app: &mut AppCtx, channel: usi
             let outer = ui.clip_rect();
             ui.set_clip_rect(outer.intersect(body));
             let drums = &mut state.drums;
-            actions = drums::show_strips(&mut ui, &app.cx, strips, kit, drums, color, &links);
+            actions =
+                drums::show_strips(&mut ui, &app.cx, strips, kit, drums, color, &links, &levels);
             ui.set_clip_rect(outer);
             if let Some(touch) = state.drums.touch.take() {
                 state.touch = Some((channel, touch));

@@ -226,6 +226,9 @@ pub struct DrumGridView {
     pub previewing: bool,
     /// Per row, its pad's output peaks (L, R), as [`StepSeqView::levels`]. The host sets it each frame.
     pub levels: Vec<[f32; 2]>,
+    /// The host draws the drum mixer's strips itself, as [`StepSeqView::strip_meters`]. The host sets it
+    /// each frame.
+    pub strip_meters: bool,
     /// The Snap button's state.
     pub snap: Snap,
     pub graph: GraphLane,
@@ -441,9 +444,18 @@ impl DrumGridView {
             self.covered,
         );
         let heads = (&mut self.current, &mut self.press, &mut self.fold);
-        if let Some((row, at)) =
-            step_seq::row_headers(ui, &painter, cx, id(), &l, pads, &self.levels, ink, heads)
-        {
+        if let Some((row, at)) = step_seq::row_headers(
+            ui,
+            &painter,
+            cx,
+            id(),
+            &l,
+            pads,
+            &self.levels,
+            ink,
+            heads,
+            self.strip_meters,
+        ) {
             self.overlay = Some(Overlay::Menu { row, at });
         }
         // The marquee: a square growing while a touch is held on empty grid, then the box.

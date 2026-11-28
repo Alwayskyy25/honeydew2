@@ -2449,8 +2449,7 @@ pub(crate) fn sample(stops: &[Rgba; 3], t: f32) -> Rgba {
 /// bars t tall in `area`: with lo and hi the content's lowest and highest key and p = the area's height
 /// / (hi − lo + 2), a key's bar is at y = bottom − t − (key − lo + 1)·p, from the note's start, max(its length, 2 px)
 /// wide (in a step-sequencer drum lane, `steps`, max(2t, a quarter beat)) and cut at its repeat's end, in the `ink` of
-/// its velocity. A step lane's hits fill their row instead (a small gap above and below), as the pattern view's
-/// steps fill their cells: a hairline dash of a hit is lost in the miniature.
+/// its velocity.
 fn notes(
     painter: &Painter,
     clip: &Clip,
@@ -2515,12 +2514,8 @@ fn notes(
         }
         *reach = right;
         let y = m.floor_px(area.bottom() - t - (f32::from(key) - f32::from(lo) + 1.0) * p);
-        let (y, h) = match steps && p > 2.0 * t {
-            true => (m.floor_px(y + 1.5 * t - p), p - t),
-            false => (y, t),
-        };
         painter.rect_filled(
-            Rect::from_x_y_ranges(x..=right, y..=y + h),
+            Rect::from_x_y_ranges(x..=right, y..=y + t),
             0.0,
             ink(velocity),
         );
@@ -4891,16 +4886,14 @@ mod tests {
                 .collect()
         };
         let bar = |x: f32, y: f32, w: f32| Rect::from_min_size(pos2(x, y), vec2(w, 2.0));
-        let block =
-            |x: f32, y: f32, w: f32| Rect::from_min_size(pos2(x, y), vec2(w, 25.6 / 4.0 - 2.0));
         assert_eq!(lane.grid, DrumGrid::Steps);
         assert_eq!(
             bars(&lane, 32.0),
-            [block(100.0, 136.0, 8.0), block(132.0, 123.0, 8.0)]
+            [bar(100.0, 140.0, 8.0), bar(132.0, 127.0, 8.0)]
         );
         assert_eq!(
             bars(&lane, 8.0),
-            [block(100.0, 136.0, 4.0), block(108.0, 123.0, 4.0)]
+            [bar(100.0, 140.0, 4.0), bar(108.0, 127.0, 4.0)]
         );
         // A free-grid lane: its length, at least 2 px.
         lane.grid = DrumGrid::Notes;

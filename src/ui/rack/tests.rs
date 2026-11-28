@@ -3678,14 +3678,15 @@ fn the_rack_is_20_u_wide_capped_at_the_area_width_right_aligned_and_full_height(
 }
 
 #[test]
-fn a_portrait_window_over_20_u_wide_gets_the_full_screen_rack_and_full_width_menu_and_pickers() {
+fn a_portrait_window_gets_a_three_quarter_rack_and_full_width_menu_and_pickers() {
     // 900 × 1400 px at U = 32 is 28 U wide, but taller than wide.
     let m = Metrics::from_pixels_per_point(1.0, DEFAULT_UI_SCALE);
     let screen = Rect::from_min_size(Pos2::ZERO, vec2(900.0, 1400.0));
     let rack = crate::ui::main_screen::Regions::new(screen, &m)
         .with_rack(1.0, &m)
         .rack;
-    assert_eq!(rack.x_range(), screen.x_range());
+    // FL Studio Mobile's portrait rack: three quarters of the screen (Rizky, 2026-11-28).
+    assert_eq!(rack.x_range(), 225.0..=900.0);
     let c = Chrome::new(rack, m.u_px());
     assert!(c.full && c.close.is_some());
     assert_eq!(crate::ui::main_menu::shell_layout(screen, &m).panel, screen);
@@ -3735,13 +3736,14 @@ fn the_chrome_is_full_screen_below_20_u_with_margins_from_1_5_down_to_0_5_u() {
     let tab = collapse_tab(rack, u, 270.0);
     assert_eq!(
         (tab.left(), tab.width(), tab.center().y),
-        (514.0, 32.0, 270.0)
+        (522.0, 32.0, 270.0)
     );
     assert!((tab.height() - 1.6 * u).abs() < 1e-3);
     // 19 U: full screen already (narrower than 20 U), with 1 U margins.
     let narrower = Chrome::new(Rect::from_min_size(Pos2::ZERO, vec2(608.0, 540.0)), u);
     assert_eq!((narrower.full, narrower.margin), (true, 32.0));
-    // Full screen on a 16.9 U phone: 0.5 U margins, a 1.75 U header with the X at its right end, no collapse tab.
+    // Full screen on a 16.9 U phone: 0.5 U margins, a 1.75 U header, its name centred between the ≡ and
+    // the right square (the close X that sat in it is gone: the collapse tab closes every rack).
     let full = Chrome::new(Rect::from_min_size(Pos2::ZERO, vec2(540.0, 900.0)), u);
     assert!(full.full);
     assert_eq!((full.margin, full.header_bottom), (16.0, 56.0));
