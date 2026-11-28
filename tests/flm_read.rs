@@ -997,12 +997,12 @@ fn drum_slots_sit_on_their_pad_and_get_unique_ids() {
     });
     let song = read(&bytes).unwrap();
     let kit = song.channels[1].drum_kit.as_ref().unwrap();
-    // The slots stay in file order (pads 2, 0, 1), each keeping its pad; the ids are made unique in that
-    // order: the first keeps 4, the duplicate and the 0 are given fresh ones.
+    // The ids are made unique in file order: the first (pad 2) keeps 4, the duplicate and the 0 are
+    // given fresh ones. The kit then lists the slots in pad order, as FL Studio Mobile does.
     let names: Vec<&str> = kit.slots.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Pad 2", "Pad 0", "Pad 1"]);
+    assert_eq!(names, ["Pad 0", "Pad 1", "Pad 2"]);
     let ids: Vec<u32> = kit.slots.iter().map(|s| s.file.id).collect();
-    assert_eq!(ids, [4, 5, 6]);
+    assert_eq!(ids, [5, 6, 4]);
     assert_eq!(kit.file.last_slot_id, 6);
     // The folder reads with `/`.
     assert_eq!(kit.slots[0].folder, "Drum Samples/Kick");
@@ -1910,10 +1910,10 @@ fn a_send_on_the_master_is_dropped() {
 
 #[test]
 fn drum_hits_follow_their_slot_when_the_pads_are_not_0_to_n() {
-    // Slots on pads 2, 0, 5 stay in file order, at positions 0, 1, 2, and the hits keyed by pad follow
-    // them: the hit on pad 0 lands on position 1, the one on pad 2 on position 0. A hit on a pad without a
-    // slot (1 here, played by nothing) keeps playing nothing: below the slots it goes to 255, past them it
-    // stays.
+    // Slots on pads 2, 0, 5 are listed in pad order — Pad 0, Pad 2, Pad 5 at positions 0, 1, 2 — and the
+    // hits keyed by pad follow them: the hit on pad 0 lands on position 0, the one on pad 2 on position 1.
+    // A hit on a pad without a slot (1 here, played by nothing) keeps playing nothing: below the slots it
+    // goes to 255, past them it stays.
     let slot = |w: &mut W, pad: f64, id: u32| {
         w.chunk(*b"SMPl", |w| {
             w.raw(&MAGIC_SL02)?;
@@ -1952,14 +1952,14 @@ fn drum_hits_follow_their_slot_when_the_pads_are_not_0_to_n() {
     let song = read(&bytes).unwrap();
     let kit = song.channels[1].drum_kit.as_ref().unwrap();
     let names: Vec<&str> = kit.slots.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Pad 2", "Pad 0", "Pad 5"]);
+    assert_eq!(names, ["Pad 0", "Pad 2", "Pad 5"]);
     let pads: Vec<u8> = (song.channels[1].lanes[0].clips[0].events.iter())
         .map(|e| match *e {
             Event::Drum { pad, .. } => pad,
             _ => panic!("{e:?}"),
         })
         .collect();
-    assert_eq!(pads, [1, 0, 2, 255, 7]);
+    assert_eq!(pads, [0, 1, 2, 255, 7]);
     assert_eq!(read(&write(&song).unwrap()).unwrap(), song);
 }
 

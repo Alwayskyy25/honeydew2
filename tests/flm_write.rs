@@ -926,13 +926,14 @@ fn a_drumset_reads_legacy_smpl_slots_beside_smpl_ones() {
     bytes.extend(&legacy);
     let kit = read_drumset(&bytes).unwrap();
     assert_eq!(kit.file.pads, pads);
-    // File order, not pad order: the legacy Snare (pad 4) is listed before the Kick (pad 3).
+    // Pad order, as FL Studio Mobile lists a kit: the legacy Kick (pad 3) is listed before the Snare
+    // (pad 4), though the file stores the Snare first.
     let names: Vec<_> = kit.slots.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         names,
-        ["Synth Kick", "Synth Snare", "Synth Clap", "Snare", "Kick"]
+        ["Synth Kick", "Synth Snare", "Synth Clap", "Kick", "Snare"]
     );
-    let kick = &kit.slots[4];
+    let kick = &kit.slots[3];
     assert_eq!(kick.folder, "Drum Samples/808");
     assert_eq!(
         kick.file.path,
@@ -946,14 +947,15 @@ fn a_drumset_reads_legacy_smpl_slots_beside_smpl_ones() {
         std::array::from_fn::<f32, 10, _>(|i| i as f32 / 10.0)
     );
     assert_eq!(kick.params[10], SamplerSlot::default().params[10]);
-    // The ids: the file's where it has one, else a fresh one past them all.
+    // The ids: the file's where it has one, else a fresh one past them all (the legacy Kick, listed
+    // fourth in pad order, holds the fresh 6; the Snare keeps its 5).
     let ids: Vec<u32> = kit.slots.iter().map(|s| s.file.id).collect();
-    assert_eq!(ids, [1, 2, 3, 5, 6]);
+    assert_eq!(ids, [1, 2, 3, 6, 5]);
     assert_eq!(kit.file.last_slot_id, 6);
     // The legacy layout without PADS (`[PADS(22)]`): the identity map (default bytes 0..21).
     let bare = read_drumset(&[&b"LPMT"[..], &legacy].concat()).unwrap();
     let names: Vec<_> = bare.slots.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Snare", "Kick"]);
+    assert_eq!(names, ["Kick", "Snare"]);
     assert_eq!(bare.file.pads, std::array::from_fn(|i| i as u8));
 }
 
